@@ -427,13 +427,24 @@ export class PaymeSubsApiService {
             return;
         }
 
+        const cardConditions = [{ userId }];
+        if (user.telegramId) {
+            cardConditions.push({ telegramId: user.telegramId });
+        }
+
         const userCard = await UserCardsModel.findOne({
-            userId: userId,
             cardType: CardType.PAYME,
             isDeleted: { $ne: true },
-        });
+            verified: true,
+            $or: cardConditions,
+        })
+            .sort({ verifiedDate: -1 })
+            .exec();
         if (!userCard) {
-            logger.error('User card not found');
+            logger.error('User card not found for Payme auto payment', {
+                userId,
+                telegramId: user.telegramId,
+            });
             return;
         }
         if (userCard.cardType !== CardType.PAYME) {
