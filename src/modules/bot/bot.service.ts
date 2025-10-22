@@ -556,6 +556,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       subscribe: this.handleSubscribeCallback.bind(this),
       check_status: this.handleStatus.bind(this),
       cancel_subscription: this.handleSubscriptionCancellation.bind(this),
+      payme_subscription_unavailable: this.handlePaymeSubscriptionUnavailable.bind(this),
       main_menu: this.showMainMenu.bind(this),
       confirm_subscribe_basic: this.confirmSubscription.bind(this),
       agree_terms: this.handleAgreement.bind(this),
@@ -914,6 +915,15 @@ ${expirationLabel} ${subscriptionEndDate}`;
     }
   }
 
+  private async handlePaymeSubscriptionUnavailable(
+    ctx: BotContext,
+  ): Promise<void> {
+    await ctx.answerCallbackQuery({
+      text: '⚠️ Tez orada bu Payme bilan obuna ishlaydi. Jarayonda.',
+      show_alert: true,
+    } as any);
+  }
+
   private async handleSubscriptionCancellation(ctx: BotContext): Promise<void> {
     try {
       const telegramId = ctx.from?.id;
@@ -1192,16 +1202,12 @@ ${expirationLabel} ${subscriptionEndDate}`;
       process.env.UZCARD_API_URL_SPORTS +
       `?userId=${userId}&planId=${plan._id}&selectedService=${selectedService}`;
 
-    const paymeUrl =
-      process.env.BASE_PAYME_URL +
-      `?userId=${userId}&planId=${plan._id}&selectedService=${selectedService}`;
-
     return new InlineKeyboard()
       .url('🏦 Uzcard/Humo (30 kun bepul)', uzcardUrl)
       .row()
       .url('💳 Click (30 kun bepul)', clickUrl)
       .row()
-      .url('📲 Payme (30 kun bepul)', paymeUrl)
+      .text('📲 Payme (30 kun bepul)', 'payme_subscription_unavailable')
       .row()
       .text('🔙 Orqaga', 'back_to_payment_types')
       .row()
