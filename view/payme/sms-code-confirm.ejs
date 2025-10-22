@@ -468,16 +468,25 @@
                     const data = await response.json();
                     console.log('Verification response:', data);
 
-                    if (data && data.success === true) {
+                    if (data?.success === true) {
+                        const headerParagraph = document.querySelector('.header p');
+                        const statusMessage = data.message || 'Tasdiqlash muvaffaqiyatli yakunlandi!';
+                        headerParagraph.textContent = statusMessage;
+
+                        const notice = document.createElement('p');
+                        notice.className = 'success';
+                        notice.style.display = 'block';
+                        notice.textContent = data.trialActivated === false
+                            ? "Sizda bepul sinov muddati avval tugagan. Obuna pullik rejimda faollashtirildi va to'lov kartangizdan yechildi."
+                            : "Kartangiz saqlandi va 30 kunlik bepul sinov faollashtirildi.";
+                        headerParagraph.after(notice);
+
                         // Hide the form first
                         document.getElementById('smsForm').style.display = 'none';
 
                         // Hide other elements
                         document.getElementById('timer').style.display = 'none';
                         document.getElementById('resendContainer').style.display = 'none';
-
-                        // Update the header message
-                        document.querySelector('.header p').textContent = 'Tasdiqlash muvaffaqiyatli yakunlandi!';
 
                         // Add the button in the form's place
                         const formContainer = document.getElementById('smsForm').parentNode;
@@ -508,7 +517,7 @@
                         formContainer.insertBefore(buttonDiv, document.getElementById('smsForm').nextSibling);
                     } else {
                         // Show specific error message from API
-                        const errorMessage = data.error?.message || 'Verification failed. Please try again.';
+                        const errorMessage = data?.message || data?.error?.message || 'Verification failed. Please try again.';
                         document.getElementById('smsError').textContent = errorMessage;
                         document.getElementById('smsError').style.display = 'block';
 

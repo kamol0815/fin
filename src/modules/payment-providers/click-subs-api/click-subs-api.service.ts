@@ -175,28 +175,52 @@ export class ClickSubsApiService {
                     cardType: CardType.CLICK
                 });
             }
-            const endDate = new Date();
-            endDate.setDate(endDate.getDate() + 30);
+            user.subscriptionType = 'subscription';
+            await user.save();
 
-            await UserSubscription.create({
-                user: requestBody.userId,
-                plan: requestBody.planId,
-                telegramId: user.telegramId,
-                planName: plan.name,
-                subscriptionType: 'subscription',
-                startDate: new Date(),
-                endDate: endDate,
-                isActive: true,
-                autoRenew: true,
-                status: 'active',
-                paidAmount: plan.price,
-                paidBy: CardType.CLICK,
-                subscribedBy: CardType.CLICK,
-                hasReceivedFreeBonus: true
-            });
-            const successResult = response.data;
-            if (user.hasReceivedFreeBonus) {
+            const hasUsedTrial = Boolean(user.hasReceivedFreeBonus);
+            const duration = Number(plan.duration) || 30;
+            const responsePayload = {
+                success: true,
+                trialActivated: !hasUsedTrial,
+                message: !hasUsedTrial
+                    ? '30 kunlik bepul obuna faollashtirildi.'
+                    : 'Tekin sinov muddati avval faollashtirilgan. Obuna pullik rejimda davom ettirildi.',
+                result: response.data,
+            };
+
+            if (!hasUsedTrial) {
+                const now = new Date();
+                const endDate = new Date(now);
+                endDate.setDate(endDate.getDate() + duration);
+
+                await UserSubscription.create({
+                    user: requestBody.userId,
+                    plan: requestBody.planId,
+                    subscriptionType: 'subscription',
+                    startDate: now,
+                    endDate,
+                    isActive: true,
+                    autoRenew: true,
+                    status: 'active',
+                    paidAmount: 0,
+                    isTrial: true,
+                });
+
                 if (requestBody.selectedService === 'yulduz') {
+                    await this.getBotService().handleAutoSubscriptionSuccess(
+                        requestBody.userId,
+                        user.telegramId,
+                        requestBody.planId,
+                        user.username
+                    );
+                }
+
+                return responsePayload;
+            }
+
+            if (requestBody.selectedService === 'yulduz') {
+                try {
                     await this.getBotService().handleCardAddedWithoutBonus(
                         requestBody.userId,
                         user.telegramId,
@@ -205,25 +229,20 @@ export class ClickSubsApiService {
                         user.username,
                         requestBody.selectedService
                     );
-                    return successResult;
+                } catch (botError) {
+                    logger.error(
+                        `Failed to trigger paid renewal for CLICK user ${user.telegramId}:`,
+                        botError,
+                    );
+                    return {
+                        success: false,
+                        trialActivated: false,
+                        message: "Kartangiz saqlandi, ammo pullik obunani faollashtirishda muammo yuz berdi. Iltimos qaytadan urinib ko'ring."
+                    };
                 }
-
-            }
-            user.subscriptionType = 'subscription'
-            await user.save();
-
-
-            if (requestBody.selectedService === 'yulduz') {
-                await this.getBotService().handleAutoSubscriptionSuccess(
-                    requestBody.userId,
-                    user.telegramId,
-                    requestBody.planId,
-                    user.username
-                );
             }
 
-
-            return response.data;
+            return responsePayload;
         } catch (error) {
             console.error('Error verifying card token:', error);
             throw error;

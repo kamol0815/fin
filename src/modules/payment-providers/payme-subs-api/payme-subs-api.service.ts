@@ -257,71 +257,81 @@ export class PaymeSubsApiService {
                     });
                 }
 
-                user.subscriptionType = 'subscription'
+                user.subscriptionType = 'subscription';
                 await user.save();
 
-                const plan = await Plan.findOne({
-                    _id: requestBody.planId
-                });
+                const plan = await Plan.findById(requestBody.planId);
                 if (!plan) {
                     logger.error(`Plan not found for ID: ${requestBody.planId}`);
                     throw new Error('Plan not found');
                 }
 
-                const successResult = {
+                const hasUsedTrial = Boolean(user.hasReceivedFreeBonus);
+                const responsePayload = {
                     success: true,
-                    result: response.data.result
+                    result: response.data.result,
+                    trialActivated: !hasUsedTrial,
+                    message: !hasUsedTrial
+                        ? '30 kunlik bepul obuna faollashtirildi.'
+                        : 'Tekin sinov muddati avval faollashtirilgan. Obuna pullik rejimda davom ettirildi.',
                 };
 
-                const endDate = new Date();
-                endDate.setDate(endDate.getDate() + 30);
+                if (!hasUsedTrial) {
+                    const now = new Date();
+                    const endDate = new Date(now);
+                    const duration = Number(plan.duration) || 30;
+                    endDate.setDate(endDate.getDate() + duration);
 
-                await UserSubscription.create({
-                    user: requestBody.userId,
-                    plan: requestBody.planId,
-                    telegramId: user.telegramId,
-                    planName: plan.name,
-                    subscriptionType: 'subscription',
-                    startDate: new Date(),
-                    endDate: endDate,
-                    isActive: true,
-                    autoRenew: true,
-                    status: 'active',
-                    paidBy: CardType.PAYME,
-                    subscribedBy: CardType.PAYME,
-                    hasReceivedFreeBonus: true,
-                    paidAmount: plan.price // Add the missing paidAmount field
-                });
+                    await UserSubscription.create({
+                        user: requestBody.userId,
+                        plan: requestBody.planId,
+                        subscriptionType: 'subscription',
+                        startDate: now,
+                        endDate,
+                        isActive: true,
+                        autoRenew: true,
+                        status: 'active',
+                        paidAmount: 0,
+                        isTrial: true,
+                    });
 
-                if (user.hasReceivedFreeBonus) {
                     if (requestBody.selectedService === 'yulduz') {
+                        await this.getBotService().handleAutoSubscriptionSuccess(
+                            requestBody.userId,
+                            user.telegramId,
+                            requestBody.planId,
+                            user.username,
+                        );
+                    }
+
+                    return responsePayload;
+                }
+
+                if (requestBody.selectedService === 'yulduz') {
+                    try {
                         await this.getBotService().handleCardAddedWithoutBonus(
                             requestBody.userId,
                             user.telegramId,
                             CardType.PAYME,
                             plan,
                             user.username,
-                            requestBody.selectedService
+                            requestBody.selectedService,
                         );
-                        return successResult;
+                    } catch (botError) {
+                        logger.error(
+                            `Failed to trigger paid renewal for PAYME user ${user.telegramId}:`,
+                            botError,
+                        );
+                        return {
+                            success: false,
+                            trialActivated: false,
+                            message:
+                                "Kartangiz saqlandi, ammo pullik obunani faollashtirishda muammo yuz berdi. Iltimos qaytadan urinib ko'ring.",
+                        };
                     }
-
                 }
 
-                if (requestBody.selectedService === 'yulduz') {
-                    await this.getBotService().handleAutoSubscriptionSuccess(
-                        requestBody.userId,
-                        user.telegramId,
-                        requestBody.planId,
-                        user.username
-                    );
-                }
-
-
-                return {
-                    success: true,
-                    result: response.data.result
-                };
+                return responsePayload;
             } catch (error) {
                 logger.error('Error processing successful verification:', error);
                 return {

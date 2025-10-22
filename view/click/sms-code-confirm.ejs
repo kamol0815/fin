@@ -116,6 +116,14 @@
             display: none;
         }
 
+        .success {
+            color: #4ade80;
+            font-size: 14px;
+            margin-top: 10px;
+            display: none;
+            text-align: center;
+        }
+
         .footer {
             text-align: center;
             margin-top: 25px;
@@ -388,8 +396,23 @@
                         body: JSON.stringify(requestData)
                     });
 
-                    if (response.ok) {
-                        const data = await response.json();
+                    const data = await response.json();
+
+                    if (response.ok && data?.success === true) {
+                        const headerParagraph = document.querySelector('.header p');
+                        const statusMessage = data.message || 'Tasdiqlash muvaffaqiyatli yakunlandi!';
+                        headerParagraph.textContent = statusMessage;
+
+                        const notice = document.createElement('div');
+                        notice.className = 'success';
+                        notice.style.display = 'block';
+                        notice.textContent = data.trialActivated === false
+                            ? "Tekin sinov allaqachon ishlatilgan. Obuna pullik rejimda faollashtirildi va to'lov amalga oshirildi."
+                            : "Kartangiz saqlandi va bepul sinov ishga tushirildi.";
+                        headerParagraph.after(notice);
+
+                        document.getElementById('timer').style.display = 'none';
+                        document.getElementById('resendContainer').style.display = 'none';
 
                         // Show success message and button
                         const footer = document.querySelector('.footer');
@@ -416,15 +439,16 @@
     </div>
 `;
 
-                        // Optional: hide form
+                        // Hide form
                         document.getElementById('smsForm').style.display = 'none';
                     } else {
-                        throw new Error('Failed to verify card token');
+                        const errorMessage = data?.message || 'Tasdiqlash muvaffaqiyatsiz yakunlandi. Iltimos qaytadan urinib ko‘ring.';
+                        throw new Error(errorMessage);
                     }
                 } catch (error) {
                     console.error('Error:', error);
                     // Show error message to user
-                    document.getElementById('smsError').textContent = 'Verification failed. Please try again.';
+                    document.getElementById('smsError').textContent = error.message || 'Verification failed. Please try again.';
                     document.getElementById('smsError').style.display = 'block';
 
                     // Reset button state

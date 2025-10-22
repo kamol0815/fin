@@ -10,6 +10,7 @@ export interface IUserSubscriptionDocument extends Document {
   autoRenew: boolean;
   status: 'active' | 'expired' | 'cancelled' | 'pending';
   paidAmount: number;
+  isTrial: boolean;
 }
 
 const userSubscriptionSchema = new mongoose.Schema(
@@ -54,6 +55,10 @@ const userSubscriptionSchema = new mongoose.Schema(
     paidAmount: {
       type: Number,
       required: true,
+    },
+    isTrial: {
+      type: Boolean,
+      default: false,
     },
   },
   {
