@@ -3,9 +3,23 @@ import { createSignedToken } from './signed-token.util';
 
 const ROUTE_PREFIX = 'payment-link';
 const DEFAULT_GLOBAL_PREFIX = 'api';
+const PLACEHOLDER_HOSTS = new Set(['example.com', 'example.org', 'example.net']);
 
 function sanitizeBase(base: string): string {
   return base.replace(/\/+$/, '');
+}
+
+function isPlaceholderBase(base: string): boolean {
+  if (!base) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(base);
+    return PLACEHOLDER_HOSTS.has(parsed.hostname.toLowerCase());
+  } catch {
+    return /example\.(com|org|net)/i.test(base);
+  }
 }
 
 function buildBaseUrl(origin: string, globalPrefix?: string): string {
@@ -93,11 +107,22 @@ function deriveApiBaseFromPaymentLink(paymentLinkBase: string): string | undefin
 }
 
 export function resolveSubscriptionManagementBase(): string | undefined {
-  const explicitBase =
-    config.SUBSCRIPTION_BASE_URL?.trim() ??
-    config.SUBSCRIPTION_MANAGEMENT_BASE_URL?.trim();
-  if (explicitBase) {
-    return sanitizeBase(explicitBase);
+  const explicitBases = [
+    config.SUBSCRIPTION_BASE_URL?.trim(),
+    config.SUBSCRIPTION_MANAGEMENT_BASE_URL?.trim(),
+  ];
+
+  for (const rawBase of explicitBases) {
+    if (!rawBase) {
+      continue;
+    }
+
+    const sanitized = sanitizeBase(rawBase);
+    if (isPlaceholderBase(sanitized)) {
+      continue;
+    }
+
+    return sanitized;
   }
 
   const paymentBase = resolvePaymentLinkBase();
