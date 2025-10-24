@@ -83,9 +83,11 @@ export class PaymeService {
     const selectedService =
       checkPerformTransactionDto.params?.account?.selected_service;
 
-    logger.info(
-      `LOOK new ADDED field is here in checkPerformTransaction: ${selectedService}`,
-    );
+    if (selectedService) {
+      logger.info(
+        `Selected service in checkPerformTransaction: ${selectedService}`,
+      );
+    }
 
     if (!ValidationHelper.isValidObjectId(planId)) {
       return {
@@ -166,9 +168,11 @@ export class PaymeService {
     const selectedService =
       createTransactionDto.params?.account?.selected_sport;
 
-    logger.info(
-      `LOOK new ADDED field is here in createTransaction: ${selectedService}`,
-    );
+    if (selectedService) {
+      logger.info(
+        `Selected service in createTransaction: ${selectedService}`,
+      );
+    }
 
     if (!ValidationHelper.isValidObjectId(planId)) {
       return {

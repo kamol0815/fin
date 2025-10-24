@@ -34,7 +34,7 @@ export interface ErrorResponse {
 export class UzcardOnetimeApiService {
   private baseUrl = process.env.UZCARD_BASE_URL;
 
-  constructor(private readonly botService: BotService) {}
+  constructor(private readonly botService: BotService) { }
 
   async paymentWithoutRegistration(
     dto: UzcardPaymentDto,
@@ -277,10 +277,10 @@ export class UzcardOnetimeApiService {
     userId: string,
   ): Promise<
     | {
-        success: boolean;
-        session: string;
-        message: string;
-      }
+      success: boolean;
+      session: string;
+      message: string;
+    }
     | ErrorResponse
   > {
     try {
