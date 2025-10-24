@@ -210,31 +210,27 @@ export class UzcardOnetimeApiService {
       user.subscriptionType = 'onetime';
       await user.save();
 
-      // const endDate = new Date();
-      // endDate.setMonth(endDate.getMonth() + 30);
-      //
-      // await UserSubscription.create({
-      //   user: transaction.userId,
-      //   plan: transaction.planId,
-      //   telegramId: user.telegramId,
-      //   planName: plan.name,
-      //   subscriptionType: 'onetime',
-      //   startDate: new Date(),
-      //   endDate: endDate,
-      //   isActive: true,
-      //   autoRenew: false,
-      //   status: 'active',
-      //   paidBy: CardType.UZCARD,
-      //   hasReceivedFreeBonus: false,
-      // });
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + plan.duration); // plan.duration kun qo'shish
+
+      await UserSubscription.create({
+        user: transaction.userId,
+        plan: transaction.planId,
+        subscriptionType: 'onetime',
+        startDate: new Date(),
+        endDate: endDate,
+        isActive: true,
+        autoRenew: false,
+        status: 'active',
+        paidAmount: cardDetails.amount,
+        isTrial: false,
+      });
 
       if (user) {
         await this.botService.handlePaymentSuccessForUzcard(
           transaction.userId.toString(),
           user.telegramId,
           user.username,
-          // @ts-ignore
-          // fiscalResult.QRCodeURL,
           dto.selectedService,
         );
       }
