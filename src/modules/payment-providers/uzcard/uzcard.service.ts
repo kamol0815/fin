@@ -51,7 +51,6 @@ export class UzCardApiService {
   async addCard(dto: AddCardDto): Promise<AddCardResponseDto | ErrorResponse> {
     const headers = this.getHeaders();
 
-
     const payload: ExternalAddCardDto = {
       userId: dto.userId,
       cardNumber: dto.cardNumber,
@@ -95,6 +94,73 @@ export class UzCardApiService {
         // @ts-ignore
         const errorCode =
           error.response.data.error.errorCode?.toString() || 'unknown';
+
+        // If error is -108 (card already exists), try to delete and re-add
+        if (errorCode === '-108') {
+          logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${dto.userId}`);
+
+          try {
+            // Find and delete existing card from database
+            const existingCard = await UserCardsModel.findOne({
+              userId: dto.userId,
+              cardType: CardType.UZCARD,
+            });
+
+            if (existingCard && existingCard.UzcardIdForDeleteCard) {
+              logger.info(`Found existing card, attempting to delete from Uzcard API...`);
+
+              // Delete card from Uzcard API
+              try {
+                await axios.delete(
+                  `${this.baseUrl}/UserCard/deleteUserCard`,
+                  {
+                    headers,
+                    params: { userCardId: existingCard.UzcardIdForDeleteCard },
+                  },
+                );
+                logger.info(`Card deleted from Uzcard API successfully`);
+              } catch (deleteError) {
+                logger.warn(`Failed to delete card from Uzcard API, continuing anyway...`);
+              }
+
+              // Delete card from our database
+              await UserCardsModel.deleteOne({ _id: existingCard._id });
+              logger.info(`Card deleted from database successfully`);
+
+              // Wait a moment for Uzcard system to process
+              await new Promise(resolve => setTimeout(resolve, 1000));
+
+              // Try to add the card again
+              logger.info(`Attempting to re-add card...`);
+              const retryResponse = await axios.post(
+                `${this.baseUrl}/UserCard/createUserCard`,
+                payload,
+                { headers },
+              );
+
+              if (retryResponse.data.error) {
+                const retryErrorCode = retryResponse.data.error.errorCode?.toString() || 'unknown';
+                return {
+                  success: false,
+                  errorCode: retryErrorCode,
+                  message: retryResponse.data.error.errorMessage || this.getErrorMessage(retryErrorCode),
+                };
+              }
+
+              logger.info(`Card re-added successfully after deletion`);
+              return {
+                session: retryResponse.data.result.session,
+                otpSentPhone: retryResponse.data.result.otpSentPhone,
+                success: true,
+              };
+            } else {
+              logger.warn(`No existing card found in database, but Uzcard says card exists`);
+            }
+          } catch (cleanupError) {
+            logger.error(`Error during card cleanup and retry: ${cleanupError}`);
+          }
+        }
+
         return {
           success: false,
           errorCode: errorCode,
@@ -617,7 +683,7 @@ export class UzCardApiService {
       '-101': `Karta malumotlari noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
       '-103': `Amal qilish muddati noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
       '-104': 'Karta aktive emas. Bankga murojaat qiling.',
-      '-108': 'Karta tizimga ulangan. Bizga murojaat qiling.',
+      '-108': `Bu karta allaqachon tizimda mavjud. Iltimos qaytadan urinib ko'ring.`,
 
       // sms errors
       '-113': `Tasdiqlash kodi muddati o'tgan. Qayta yuborish tugmasidan foydalaning.`,

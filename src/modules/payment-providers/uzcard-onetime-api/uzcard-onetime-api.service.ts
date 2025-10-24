@@ -403,7 +403,7 @@ export class UzcardOnetimeApiService {
       '-101': `Karta malumotlari noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
       '-103': `Amal qilish muddati noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
       '-104': 'Karta aktive emas. Bankga murojaat qiling.',
-      '-108': 'Karta tizimga ulangan. Bizga murojaat qiling.',
+      '-108': `Bu karta allaqachon obunaga ulangan. Iltimos, boshqa karta bilan to'lovni amalga oshiring yoki Click/Payme orqali to'lang.`,
 
       // sms errors
       '-113': `Tasdiqlash kodi muddati o'tgan. Qayta yuborish tugmasidan foydalaning.`,
