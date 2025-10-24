@@ -11,7 +11,7 @@ const CLICK_URL = `https://my.click.uz`;
 const BOT_URL = 'https://t.me/Yulduz_bashorati_bot';
 
 function buildMerchantTransactionId(params: ClickRedirectParams): string {
-  return `${params.planId}.${params.userId}`;
+  return `${params.userId}.${params.planId}`;
 }
 
 export function buildClickProviderUrl(params: ClickRedirectParams): string {
