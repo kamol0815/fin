@@ -44,7 +44,7 @@ export class PaymeService {
   constructor(
     private readonly configService: ConfigService,
     private readonly botService: BotService,
-  ) {}
+  ) { }
 
   async handleTransactionMethods(reqBody: RequestBody) {
     const method = reqBody.method;
@@ -330,30 +330,32 @@ export class PaymeService {
 
     const user = await UserModel.findById(transaction.userId).exec();
 
-    if (
-      user &&
-      hasActiveSubscription(user) &&
-      transaction.status === TransactionStatus.PENDING
-    ) {
-      await Transaction.findOneAndUpdate(
-        { transId: performTransactionDto.params.id },
-        {
-          status: TransactionStatus.CANCELED,
-          state: TransactionState.PendingCanceled,
-          cancelTime: new Date(),
-          reason: CancelingReasons.TransactionFailed,
-        },
-      ).exec();
-
-      return {
-        error: {
-          ...PaymeError.AlreadyDone,
-          state: TransactionState.PendingCanceled,
-          reason: CancelingReasons.TransactionFailed,
-        },
-        id: performTransactionDto.params.id,
-      };
-    }
+    // Faqat subscription to'lovlari uchun aktiv obuna tekshiruvi
+    // Onetime to'lovlar uchun bu tekshiruv o'tkazib yuboriladi
+    // if (
+    //   user &&
+    //   hasActiveSubscription(user) &&
+    //   transaction.status === TransactionStatus.PENDING
+    // ) {
+    //   await Transaction.findOneAndUpdate(
+    //     { transId: performTransactionDto.params.id },
+    //     {
+    //       status: TransactionStatus.CANCELED,
+    //       state: TransactionState.PendingCanceled,
+    //       cancelTime: new Date(),
+    //       reason: CancelingReasons.TransactionFailed,
+    //     },
+    //   ).exec();
+    //
+    //   return {
+    //     error: {
+    //       ...PaymeError.AlreadyDone,
+    //       state: TransactionState.PendingCanceled,
+    //       reason: CancelingReasons.TransactionFailed,
+    //     },
+    //     id: performTransactionDto.params.id,
+    //   };
+    // }
 
     if (transaction.status !== 'PENDING') {
       if (transaction.status !== 'PAID') {
