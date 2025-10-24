@@ -230,7 +230,20 @@ export class PaymeService {
     }).exec();
 
     if (existingTransaction) {
-      if (existingTransaction.transId === transId) {
+      // Eski transactionning muddatini tekshirish
+      const isExpired = this.checkTransactionExpiration(existingTransaction.createdAt);
+
+      if (isExpired) {
+        // Muddati tugagan transaction - bekor qilish
+        await Transaction.findByIdAndUpdate(existingTransaction._id, {
+          status: TransactionStatus.CANCELED,
+          state: TransactionState.PendingCanceled,
+          cancelTime: new Date(),
+          reason: CancelingReasons.CanceledDueToTimeout,
+        }).exec();
+
+        logger.info(`Expired pending transaction ${existingTransaction.transId} cancelled`);
+      } else if (existingTransaction.transId === transId) {
         return {
           result: {
             transaction: existingTransaction.id,
@@ -579,7 +592,7 @@ export class PaymeService {
 
   private checkTransactionExpiration(createdAt: Date) {
     const transactionCreatedAt = new Date(createdAt);
-    const timeoutDuration = 720 * 60 * 1000; // 720 minutes converted to milliseconds
+    const timeoutDuration = 15 * 60 * 1000; // 15 daqiqa (Payme standarti)
     const timeoutThreshold = new Date(Date.now() - timeoutDuration);
 
     return transactionCreatedAt < timeoutThreshold;
