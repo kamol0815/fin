@@ -27,6 +27,10 @@ import {
   Transaction,
   TransactionStatus,
 } from '../../shared/database/models/transactions.model';
+import {
+  InteractionEventType,
+  UserInteractionModel,
+} from '../../shared/database/models/user-interaction.model';
 import { join } from 'node:path';
 
 interface SessionData {
@@ -39,6 +43,7 @@ interface SessionData {
   pendingOnetimePlanId?: string;
   introStep?: number;
   introActive?: boolean;
+  pendingSubscriptionUrl?: string;
 }
 
 type BotContext = Context & SessionFlavor<SessionData>;
@@ -530,6 +535,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             selectedService: 'yulduz',
             hasAgreedToTerms: false, // Initialize as false by default
             introActive: false,
+            pendingSubscriptionUrl: undefined,
           };
         },
       }),
@@ -583,6 +589,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     const handlers: { [key: string]: (ctx: BotContext) => Promise<void> } = {
       intro_done: this.handleIntroDone.bind(this),
+      view_terms: this.handleViewTerms.bind(this),
       payment_type_onetime: this.handleOneTimePayment.bind(this),
       payment_type_subscription: this.handleSubscriptionPayment.bind(this),
       back_to_payment_types: this.showPaymentTypeSelection.bind(this),
@@ -593,6 +600,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       main_menu: this.showMainMenu.bind(this),
       confirm_subscribe_basic: this.confirmSubscription.bind(this),
       agree_terms: this.handleAgreement.bind(this),
+      open_uzcard: this.handleOpenUzcard.bind(this),
 
       not_supported_international: async (ctx) => {
         await ctx.answerCallbackQuery({
@@ -742,14 +750,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildIntroKeyboard(_: number): InlineKeyboard {
-    return new InlineKeyboard().text("🚀 Menyuga o'tish", 'intro_done');
+    return new InlineKeyboard().text('🎁 BEPUL 30 kunlik obuna', 'intro_done');
   }
 
   private async sendIntroSticker(ctx: BotContext): Promise<void> {
     const stickerId = config.INTRO_STICKER_ID?.trim();
 
     if (!stickerId) {
-      await ctx.reply("🤗 Obuna bo'lasiz-a? Pastdagi tugma orqali menyuga o'ting.");
+      await ctx.reply(
+        '🤗 <b>Bepul obuna siz uchun!</b>\nPastdagi tugma orqali keyingi bosqichga o‘ting.',
+        { parse_mode: 'HTML' },
+      );
       return;
     }
 
@@ -759,7 +770,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       logger.warn('Failed to send intro sticker, falling back to text', {
         error,
       });
-      await ctx.reply("🤗 Obuna bo'lasiz-a? Pastdagi tugma orqali menyuga o'ting.");
+      await ctx.reply(
+        '🤗 <b>Bepul obuna siz uchun!</b>\nPastdagi tugma orqali keyingi bosqichga o‘ting.',
+        { parse_mode: 'HTML' },
+      );
     }
   }
 
@@ -768,6 +782,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     ctx.session.introActive = false;
     ctx.session.introStep = undefined;
+    await this.logInteraction(ctx, InteractionEventType.INTRO_MENU);
     ctx.session.hasAgreedToTerms = false;
     await this.showTermsMessage(ctx, { preferEdit: false });
   }
@@ -783,6 +798,32 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       await ctx.editMessageReplyMarkup();
     } catch (error) {
       logger.warn('Failed to clear intro keyboard', { error });
+    }
+  }
+
+  private async logInteraction(
+    ctx: BotContext,
+    event: InteractionEventType,
+    metadata?: Record<string, any>,
+  ): Promise<void> {
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
+      return;
+    }
+
+    try {
+      await UserInteractionModel.create({
+        telegramId,
+        event,
+        metadata,
+      });
+    } catch (error) {
+      logger.warn('Failed to log interaction', {
+        telegramId,
+        event,
+        metadata,
+        error,
+      });
     }
   }
 
@@ -913,35 +954,14 @@ ${expirationLabel} ${subscriptionEndDate}`;
       }
 
       ctx.session.hasAgreedToTerms = true;
+      await this.logInteraction(ctx, InteractionEventType.ACCEPT_TERMS);
 
       const selectedService = ctx.session.selectedService ?? 'yulduz';
-      let subscriptionUrl: string | undefined;
-
-      try {
-        const plan = await Plan.findOne({ selectedName: selectedService }).exec();
-        const baseUrl =
-          process.env.UZCARD_ADD_CARD_URL ??
-          'http://213.230.110.176:8989/api/uzcard-api/add-card';
-
-        if (plan) {
-          const params = new URLSearchParams({
-            userId: user._id.toString(),
-            planId: plan._id.toString(),
-            selectedService,
-          });
-          subscriptionUrl = `${baseUrl}?${params.toString()}`;
-        } else {
-          logger.warn('Plan not found for selected service, falling back to payment selection', {
-            selectedService,
-          });
-        }
-      } catch (error) {
-        logger.warn('Failed to build Uzcard/Humo subscription URL', {
-          telegramId,
-          selectedService,
-          error,
-        });
-      }
+      const subscriptionUrl = await this.generateSubscriptionUrl(
+        user._id.toString(),
+        selectedService,
+      );
+      ctx.session.pendingSubscriptionUrl = subscriptionUrl;
 
       if (subscriptionUrl) {
         try {
@@ -951,7 +971,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
         }
 
         const keyboard = new InlineKeyboard()
-          .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionUrl)
+          .text('🎁 Uzcard/Humo (30 kun bepul)', 'open_uzcard')
           .row()
           .text('🔙 Asosiy menyu', 'main_menu');
 
@@ -960,20 +980,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
           'Karta qo‘shish uchun quyidagi tugmani bosing. ⚡️' +
           ' Jarayon tugagach botga qaytib, kanalga kirish havolasini olasiz.';
 
-        try {
-          await ctx.editMessageText(message, {
-            reply_markup: keyboard,
-            parse_mode: 'HTML',
-          });
-        } catch (error) {
-          logger.warn('Failed to edit agreement message, sending new one', {
-            error,
-          });
-          await ctx.reply(message, {
-            reply_markup: keyboard,
-            parse_mode: 'HTML',
-          });
-        }
+        await this.sendOrEditWithFallback(ctx, message, keyboard);
         return;
       }
 
@@ -987,15 +994,15 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
   private buildTermsMessage(ctx: BotContext) {
     const keyboard = new InlineKeyboard()
-      .url('📄 Foydalanish shartlari', this.subscriptionTermsLink)
+      .text('📄 Foydalanish shartlari', 'view_terms')
       .row()
-      .text('✅ Qabul qilaman', 'agree_terms');
+      .text('✅ Obuna bo‘lish', 'agree_terms');
 
     const message =
       '📜 <b>Foydalanish shartlari va shartlar:</b>\n\n' +
       "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
       `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
-      'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "Qabul qilaman" tugmasini bosing.';
+      'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "Obuna bo‘lish" tugmasini bosing.';
 
     return { message, keyboard };
   }
@@ -1004,6 +1011,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     ctx: BotContext,
     options: { preferEdit?: boolean } = {},
   ): Promise<void> {
+    ctx.session.pendingSubscriptionUrl = undefined;
     const { message, keyboard } = this.buildTermsMessage(ctx);
 
     if (options.preferEdit && ctx.callbackQuery) {
@@ -1025,6 +1033,137 @@ ${expirationLabel} ${subscriptionEndDate}`;
       parse_mode: 'HTML',
     });
     ctx.session.mainMenuMessageId = sent.message_id;
+  }
+
+  private async sendOrEditWithFallback(
+    ctx: BotContext,
+    message: string,
+    keyboard: InlineKeyboard,
+  ): Promise<void> {
+    if (ctx.callbackQuery) {
+      try {
+        await ctx.editMessageText(message, {
+          reply_markup: keyboard,
+          parse_mode: 'HTML',
+        });
+        return;
+      } catch (error) {
+        logger.warn('Failed to edit callback message, sending new one', {
+          error,
+        });
+      }
+    }
+
+    await ctx.reply(message, {
+      reply_markup: keyboard,
+      parse_mode: 'HTML',
+    });
+  }
+
+  private async handleViewTerms(ctx: BotContext): Promise<void> {
+    await this.logInteraction(ctx, InteractionEventType.VIEW_TERMS);
+
+    try {
+      await ctx.answerCallbackQuery({
+        text: 'Havola yuborildi.',
+        show_alert: false,
+      });
+    } catch (error) {
+      logger.warn('Failed to acknowledge view terms callback', { error });
+    }
+
+    const message =
+      '📄 <b>Foydalanish shartlari havolasi:</b>\n' +
+      `${this.subscriptionTermsLink}`;
+
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: false,
+    });
+  }
+
+  private async handleOpenUzcard(ctx: BotContext): Promise<void> {
+    const telegramId = ctx.from?.id;
+    const selectedService = ctx.session.selectedService ?? 'yulduz';
+
+    let subscriptionUrl = ctx.session.pendingSubscriptionUrl;
+
+    if (!subscriptionUrl && telegramId) {
+      const user = await UserModel.findOne({ telegramId }).exec();
+      if (user) {
+        subscriptionUrl = await this.generateSubscriptionUrl(
+          user._id.toString(),
+          selectedService,
+        );
+        ctx.session.pendingSubscriptionUrl = subscriptionUrl;
+      }
+    }
+
+    if (!subscriptionUrl) {
+      await ctx.answerCallbackQuery({
+        text: "Havolani yaratib bo'lmadi. Iltimos, administrator bilan bog'laning.",
+        show_alert: true,
+      } as any);
+      return;
+    }
+
+    await this.logInteraction(ctx, InteractionEventType.OPEN_UZCARD, {
+      selectedService,
+    });
+
+    try {
+      await ctx.answerCallbackQuery({
+        text: 'Havola yuborildi.',
+        show_alert: false,
+      });
+    } catch (error) {
+      logger.warn('Failed to acknowledge Uzcard callback', { error });
+    }
+
+    const message =
+      '🎁 <b>Uzcard/Humo to‘lov sahifasi</b>\n' +
+      `👉 <a href="${subscriptionUrl}">Havola orqali kartani qo‘shing</a>\n\n` +
+      'Kartani qo‘shgach, botga qaytib kanalga kirish uchun tugmani oling.';
+
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: false,
+    });
+  }
+
+  private async generateSubscriptionUrl(
+    userId: string,
+    selectedService: string,
+  ): Promise<string | undefined> {
+    try {
+      const plan = await Plan.findOne({ selectedName: selectedService }).exec();
+
+      if (!plan) {
+        logger.warn('Plan not found while generating subscription URL', {
+          selectedService,
+        });
+        return undefined;
+      }
+
+      const baseUrl =
+        process.env.UZCARD_ADD_CARD_URL ??
+        'http://213.230.110.176:8989/api/uzcard-api/add-card';
+
+      const params = new URLSearchParams({
+        userId,
+        planId: plan._id.toString(),
+        selectedService,
+      });
+
+      return `${baseUrl}?${params.toString()}`;
+    } catch (error) {
+      logger.warn('Failed to generate subscription URL', {
+        userId,
+        selectedService,
+        error,
+      });
+      return undefined;
+    }
   }
 
   private async confirmSubscription(ctx: BotContext): Promise<void> {
