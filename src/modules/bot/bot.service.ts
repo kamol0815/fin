@@ -768,7 +768,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     ctx.session.introActive = false;
     ctx.session.introStep = undefined;
-    await this.showMainMenu(ctx);
+    ctx.session.hasAgreedToTerms = false;
+    await this.showTermsMessage(ctx, { preferEdit: false });
   }
 
   private async answerAndDisableIntro(ctx: BotContext): Promise<void> {
@@ -891,21 +892,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
       ctx.session.hasAgreedToTerms = false;
 
-      const keyboard = new InlineKeyboard()
-        .url('📄 Foydalanish shartlari', this.subscriptionTermsLink)
-        .row()
-        .text('✅ Qabul qilaman', 'agree_terms');
-
-      await ctx.editMessageText(
-        '📜 <b>Foydalanish shartlari va shartlar:</b>\n\n' +
-          "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
-          `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
-          'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "Qabul qilaman" tugmasini bosing.',
-        {
-          reply_markup: keyboard,
-          parse_mode: 'HTML',
-        },
-      );
+      await this.showTermsMessage(ctx, { preferEdit: true });
     } catch (error) {
       logger.error('Subscription plan display error:', error);
       await ctx.answerCallbackQuery(
@@ -996,6 +983,48 @@ ${expirationLabel} ${subscriptionEndDate}`;
         "To'lov turlarini ko'rsatishda xatolik yuz berdi.",
       );
     }
+  }
+
+  private buildTermsMessage(ctx: BotContext) {
+    const keyboard = new InlineKeyboard()
+      .url('📄 Foydalanish shartlari', this.subscriptionTermsLink)
+      .row()
+      .text('✅ Qabul qilaman', 'agree_terms');
+
+    const message =
+      '📜 <b>Foydalanish shartlari va shartlar:</b>\n\n' +
+      "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
+      `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
+      'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "Qabul qilaman" tugmasini bosing.';
+
+    return { message, keyboard };
+  }
+
+  private async showTermsMessage(
+    ctx: BotContext,
+    options: { preferEdit?: boolean } = {},
+  ): Promise<void> {
+    const { message, keyboard } = this.buildTermsMessage(ctx);
+
+    if (options.preferEdit && ctx.callbackQuery) {
+      try {
+        await ctx.editMessageText(message, {
+          reply_markup: keyboard,
+          parse_mode: 'HTML',
+        });
+        return;
+      } catch (error) {
+        logger.warn('Failed to edit terms message, falling back to new message', {
+          error,
+        });
+      }
+    }
+
+    const sent = await ctx.reply(message, {
+      reply_markup: keyboard,
+      parse_mode: 'HTML',
+    });
+    ctx.session.mainMenuMessageId = sent.message_id;
   }
 
   private async confirmSubscription(ctx: BotContext): Promise<void> {
