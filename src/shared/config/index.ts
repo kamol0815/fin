@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import * as dotenv from 'dotenv';
 import { cleanEnv, num, str } from 'envalid';
 
 export type SubscriptionType = 'basic';
