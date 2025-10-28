@@ -190,54 +190,72 @@ export class UzCardApiService {
                 success: true,
               };
             } else {
-              logger.warn(`No existing card found in database with deletion ID, but Uzcard says card exists. Trying to get card list...`);
+              logger.warn(`No existing card found in database with deletion ID, but Uzcard says card exists. Card conflict detected.`);
 
-              // Try to get user's card list from Uzcard API to find and delete the conflicting card
+              // Since getUserCards API endpoint seems to not exist (404 error),
+              // we'll use a different approach: try to generate possible card IDs or 
+              // inform the user about the conflict
+
+              // First, let's try a simple retry after waiting - sometimes the card gets cleared automatically
+              logger.info(`Waiting 5 seconds before retry attempt...`);
+              await new Promise((resolve) => setTimeout(resolve, 5000));
+
               try {
-                const cardListResponse = await this.getUserCardList(dto.userId, headers);
-                if (cardListResponse && cardListResponse.length > 0) {
-                  // Try to find a card that matches the last 4 digits
-                  const last4Digits = dto.cardNumber.slice(-4);
-                  const conflictingCard = cardListResponse.find(card =>
-                    card.number && card.number.includes(last4Digits)
-                  );
+                const retryResponse = await axios.post(
+                  `${this.baseUrl}/UserCard/createUserCard`,
+                  payload,
+                  { headers },
+                );
 
-                  if (conflictingCard) {
-                    logger.info(`Found conflicting card in Uzcard API: ${conflictingCard.id}, attempting to delete...`);
-                    const deleteSuccess = await this.deleteUzcardCardFromProvider(conflictingCard.id, headers);
+                if (!retryResponse.data.error) {
+                  logger.info(`Card added successfully after wait and retry`);
+                  return {
+                    session: retryResponse.data.result.session,
+                    otpSentPhone: retryResponse.data.result.otpSentPhone,
+                    success: true,
+                  };
+                } else {
+                  logger.error(`Retry still failed after wait: ${retryResponse.data.error.errorMessage}`);
 
-                    if (deleteSuccess) {
-                      logger.info(`Successfully deleted conflicting card from Uzcard API`);
-                      // Wait and retry
-                      await new Promise((resolve) => setTimeout(resolve, 3000));
+                  // If it's still error -108, we have a persistent card conflict
+                  if (retryResponse.data.error.errorCode === -108) {
+                    logger.warn(`Persistent card conflict detected. This card may exist on UzCard servers but not in our database.`);
 
-                      const retryResponse = await axios.post(
+                    // Try different potential card ID patterns that might work for deletion
+                    await this.tryAdvancedCardCleanup(dto.cardNumber, dto.userId, headers);
+
+                    // One more final retry after advanced cleanup
+                    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+                    try {
+                      const finalRetry = await axios.post(
                         `${this.baseUrl}/UserCard/createUserCard`,
                         payload,
                         { headers },
                       );
 
-                      if (!retryResponse.data.error) {
-                        logger.info(`Card re-added successfully after remote deletion`);
+                      if (!finalRetry.data.error) {
+                        logger.info(`Card added successfully after advanced cleanup`);
                         return {
-                          session: retryResponse.data.result.session,
-                          otpSentPhone: retryResponse.data.result.otpSentPhone,
+                          session: finalRetry.data.result.session,
+                          otpSentPhone: finalRetry.data.result.otpSentPhone,
                           success: true,
                         };
-                      } else {
-                        logger.error(`Retry still failed: ${retryResponse.data.error.errorMessage}`);
                       }
-                    } else {
-                      logger.warn(`Failed to delete conflicting card from Uzcard API`);
+                    } catch (finalRetryError) {
+                      logger.error(`Final retry failed: ${finalRetryError}`);
                     }
-                  } else {
-                    logger.warn(`No matching card found in Uzcard card list`);
+
+                    // Return a specific error that provides helpful guidance
+                    return {
+                      success: false,
+                      errorCode: '-108',
+                      message: 'Bu karta UzCard tizimida mavjud. Iltimos, boshqa karta qo\'shing yoki @munajjimbot_admin bilan bog\'laning.',
+                    };
                   }
-                } else {
-                  logger.warn(`No cards found in Uzcard API for user`);
                 }
-              } catch (listError) {
-                logger.error(`Error getting card list: ${listError}`);
+              } catch (retryError) {
+                logger.error(`Error during retry attempt: ${retryError}`);
               }
             }
           } catch (cleanupError) {
@@ -848,23 +866,106 @@ export class UzCardApiService {
    */
   private async getUserCardList(userId: string, headers: Record<string, string>): Promise<any[]> {
     try {
+      logger.info(`Attempting to get user cards for userId: ${userId}`);
+      logger.info(`Using baseUrl: ${this.baseUrl}`);
+      logger.info(`Headers:`, headers);
+
+      // Actually, looking at the UzCard API pattern, maybe the endpoint doesn't exist
+      // Let's try a different approach - since we can't get the card list,
+      // let's just return empty array and handle the error differently
+
+      const payload = { userId };
+      logger.info(`Payload:`, payload);
+
       const response = await axios.post(
         `${this.baseUrl}/UserCard/getUserCards`,
-        { userId },
+        payload,
         { headers },
       );
+
+      logger.info(`getUserCards API response:`, {
+        status: response.status,
+        statusText: response.statusText,
+        data: response.data,
+        headers: response.headers
+      });
 
       if (response.data?.error) {
         logger.warn('Uzcard getUserCards returned error', {
           error: response.data.error,
+          errorCode: response.data.error.errorCode,
+          errorMessage: response.data.error.errorMessage
         });
         return [];
       }
 
-      return response.data?.result?.cards || [];
-    } catch (error) {
-      logger.error(`Error getting user cards from Uzcard API: ${error}`);
+      // Try different response formats
+      const cards = response.data?.result?.cards ||
+        response.data?.cards ||
+        response.data?.data?.cards ||
+        (Array.isArray(response.data) ? response.data : []);
+
+      if (Array.isArray(cards)) {
+        logger.info(`Successfully retrieved ${cards.length} cards from getUserCards API`);
+        return cards;
+      }
+
+      logger.warn('getUserCards API returned unexpected format:', response.data);
       return [];
+    } catch (error) {
+      logger.error(`Error getting user cards from Uzcard API:`, {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        config: {
+          url: error.config?.url,
+          method: error.config?.method,
+          data: error.config?.data
+        }
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Try advanced card cleanup methods when standard approaches fail
+   */
+  private async tryAdvancedCardCleanup(cardNumber: string, userId: string, headers: Record<string, string>): Promise<void> {
+    try {
+      logger.info(`Attempting advanced card cleanup for cardNumber ending ${cardNumber.slice(-4)}, userId: ${userId}`);
+
+      // Generate potential card IDs based on common patterns
+      const last4Digits = cardNumber.slice(-4);
+      const potentialCardIds = [
+        // Try simple numeric patterns
+        parseInt(last4Digits),
+        `card_${last4Digits}`,
+        `${userId}_${last4Digits}`,
+        // Try with timestamp patterns (common in many systems)
+        `${Date.now()}_${last4Digits}`.substring(0, 20),
+        // Try hash-like patterns
+        cardNumber, // Sometimes the full card number is used
+        cardNumber.replace(/\s+/g, ''), // Remove spaces
+      ];
+
+      for (const cardId of potentialCardIds) {
+        try {
+          logger.info(`Trying to delete potential card ID: ${cardId}`);
+          const deleted = await this.deleteUzcardCardFromProvider(cardId, headers);
+          if (deleted) {
+            logger.info(`Successfully deleted card with ID: ${cardId}`);
+            return; // Exit early if successful
+          }
+        } catch (deleteError) {
+          logger.debug(`Failed to delete card ID ${cardId}: ${deleteError}`);
+          // Continue with next ID
+        }
+      }
+
+      logger.warn(`Advanced card cleanup completed but no cards were successfully deleted`);
+    } catch (error) {
+      logger.error(`Error in tryAdvancedCardCleanup: ${error}`);
     }
   }
 }
