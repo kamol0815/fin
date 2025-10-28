@@ -1107,21 +1107,26 @@ ${expirationLabel} ${subscriptionEndDate}`;
     });
 
     try {
-      await ctx.answerCallbackQuery({ url: subscriptionUrl });
+      await ctx.answerCallbackQuery();
     } catch (error) {
-      logger.warn('Failed to open Uzcard link via callback, sending message', {
+      logger.warn('Failed to acknowledge Uzcard callback', {
         error,
       });
-      await ctx.reply(
-        '👉 <a href="' +
-          subscriptionUrl +
-          '">Havola orqali kartani qo‘shing</a>',
-        {
-          parse_mode: 'HTML',
-          disable_web_page_preview: false,
-        },
-      );
     }
+
+    const keyboard = new InlineKeyboard()
+      .url('🔗 Kartani qo‘shish', subscriptionUrl)
+      .row()
+      .text('🔙 Asosiy menyu', 'main_menu');
+
+    await ctx.reply(
+      '👉 Faqat bitta tugmani bosib, kartani uzcard platformasida birlashtiring.',
+      {
+        reply_markup: keyboard,
+        parse_mode: 'HTML',
+        disable_web_page_preview: false,
+      },
+    );
   }
 
   private async generateSubscriptionUrl(

@@ -19,6 +19,7 @@ import {
 import { UserModel } from '../../../shared/database/models/user.model';
 import {
   CardType,
+  IUserCardsDocument,
   UserCardsModel,
 } from '../../../shared/database/models/user-cards.model';
 import { UserSubscription } from '../../../shared/database/models/user-subscription.model';
@@ -110,16 +111,14 @@ export class UzCardApiService {
               logger.info(`Found existing card, attempting to delete from Uzcard API...`);
 
               // Delete card from Uzcard API
-              try {
-                await axios.delete(
-                  `${this.baseUrl}/UserCard/deleteUserCard`,
-                  {
-                    headers,
-                    params: { userCardId: existingCard.UzcardIdForDeleteCard },
-                  },
-                );
+              const deletedRemotely = await this.deleteUzcardCardFromProvider(
+                existingCard.UzcardIdForDeleteCard,
+                headers,
+              );
+
+              if (deletedRemotely) {
                 logger.info(`Card deleted from Uzcard API successfully`);
-              } catch (deleteError) {
+              } else {
                 logger.warn(`Failed to delete card from Uzcard API, continuing anyway...`);
               }
 
@@ -248,45 +247,51 @@ export class UzCardApiService {
         };
       }
 
-      const existingUserCard = await UserCardsModel.findOne({
+      const existingCardByNumber = await UserCardsModel.findOne({
         incompleteCardNumber: incompleteCardNumber,
       });
 
-      if (existingUserCard) {
+      if (
+        existingCardByNumber &&
+        existingCardByNumber.userId?.toString() !== user._id.toString()
+      ) {
         return {
           success: false,
           errorCode: 'card_already_exists',
           message:
-            'Bu karta raqam mavjud. Iltimos boshqa karta raqamini tanlang.',
+            'Bu karta boshqa foydalanuvchi tomonidan foydalanilmoqda. Iltimos boshqa kartadan foydalaning.',
         };
       }
 
-      // Check if user already has a UZCARD card
-      const existingCard = await UserCardsModel.findOne({
+      let cardRecord: IUserCardsDocument | null = await UserCardsModel.findOne({
         telegramId: user.telegramId,
-        cardType: CardType.UZCARD
+        cardType: CardType.UZCARD,
       });
 
+      if (!cardRecord && existingCardByNumber) {
+        cardRecord = existingCardByNumber;
+      }
+
       let userCard;
-      if (existingCard) {
-        // Update existing card
-        logger.info(`Updating existing UZCARD card for user: ${user.telegramId}`);
-        existingCard.incompleteCardNumber = incompleteCardNumber;
-        existingCard.cardToken = cardId;
-        existingCard.expireDate = expireDate;
-        existingCard.verificationCode = parseInt(request.otp);
-        existingCard.verified = true;
-        existingCard.verifiedDate = new Date();
-        existingCard.planId = plan._id as any;
-        existingCard.UzcardIsTrusted = isTrusted;
-        existingCard.UzcardBalance = balance;
-        existingCard.UzcardId = cardId;
-        existingCard.UzcardOwner = owner;
-        existingCard.UzcardIncompleteNumber = incompleteCardNumber;
-        existingCard.UzcardIdForDeleteCard = cardIdForDelete;
-        userCard = await existingCard.save();
+      if (cardRecord) {
+        logger.info(`Updating UZCARD card for user: ${user.telegramId}`);
+        cardRecord.incompleteCardNumber = incompleteCardNumber;
+        cardRecord.cardToken = cardId;
+        cardRecord.expireDate = expireDate;
+        cardRecord.verificationCode = parseInt(request.otp);
+        cardRecord.verified = true;
+        cardRecord.verifiedDate = new Date();
+        cardRecord.planId = plan._id as any;
+        cardRecord.UzcardIsTrusted = isTrusted;
+        cardRecord.UzcardBalance = balance;
+        cardRecord.UzcardId = cardId;
+        cardRecord.UzcardOwner = owner;
+        cardRecord.UzcardIncompleteNumber = incompleteCardNumber;
+        cardRecord.UzcardIdForDeleteCard = cardIdForDelete;
+        cardRecord.isDeleted = false;
+        cardRecord.deletedAt = undefined;
+        userCard = await cardRecord.save();
       } else {
-        // Create new card
         logger.info(`Creating new UZCARD card for user: ${user.telegramId}`);
         userCard = await UserCardsModel.create({
           telegramId: user.telegramId,
@@ -675,6 +680,58 @@ export class UzCardApiService {
       Authorization: authHeader,
       Language: 'uz',
     };
+  }
+
+  private async deleteUzcardCardFromProvider(
+    userCardId: number | string,
+    headers: Record<string, string>,
+  ): Promise<boolean> {
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/UserCard/deleteUserCard`,
+        { userCardId },
+        { headers },
+      );
+
+      if (response.data?.error) {
+        logger.warn('Uzcard deleteUserCard returned error', {
+          error: response.data.error,
+        });
+        return false;
+      }
+
+      const successFlag = response.data?.result?.success;
+      return successFlag !== false;
+    } catch (postError) {
+      logger.warn('Failed to delete Uzcard card via POST, trying fallback', {
+        error: postError?.message,
+      });
+
+      try {
+        const response = await axios.delete(
+          `${this.baseUrl}/UserCard/deleteUserCard`,
+          {
+            headers,
+            params: { userCardId },
+          },
+        );
+
+        if (response.data?.error) {
+          logger.warn('Uzcard delete fallback returned error', {
+            error: response.data.error,
+          });
+          return false;
+        }
+
+        const successFlag = response.data?.result?.success;
+        return successFlag !== false;
+      } catch (deleteError) {
+        logger.error('Failed to delete Uzcard card via both POST and DELETE', {
+          error: deleteError?.message,
+        });
+        return false;
+      }
+    }
   }
 
   private getErrorMessage(errorCode: string): string {

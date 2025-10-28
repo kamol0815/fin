@@ -360,21 +360,45 @@ export class UzcardOnetimeApiService {
     const uzcardIdForDelete = userCard?.UzcardIdForDeleteCard;
 
     try {
-      const response = await axios.delete(
+      const response = await axios.post(
         `${this.baseUrl}/UserCard/deleteUserCard`,
-        {
-          headers,
-          params: { userCardId: uzcardIdForDelete },
-        },
+        { userCardId: uzcardIdForDelete },
+        { headers },
       );
 
-      // Optional logging
+      if (response.data?.error) {
+        logger.warn('Uzcard deleteUserCard returned error', {
+          error: response.data.error,
+        });
+        return false;
+      }
+
       console.log('Delete response:', response.data);
 
-      return response.data?.result?.success === true;
+      return response.data?.result?.success !== false;
     } catch (error) {
-      console.error('Failed to delete card:', error);
-      return false; // or throw if you want to handle it higher up
+      console.error('Failed to delete card via POST, attempting fallback:', error);
+      try {
+        const response = await axios.delete(
+          `${this.baseUrl}/UserCard/deleteUserCard`,
+          {
+            headers,
+            params: { userCardId: uzcardIdForDelete },
+          },
+        );
+
+        if (response.data?.error) {
+          logger.warn('Uzcard deleteUserCard fallback returned error', {
+            error: response.data.error,
+          });
+          return false;
+        }
+
+        return response.data?.result?.success !== false;
+      } catch (fallbackError) {
+        console.error('Failed to delete card via fallback:', fallbackError);
+        return false;
+      }
     }
   }
 
