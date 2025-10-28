@@ -756,11 +756,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async sendIntroSticker(ctx: BotContext): Promise<void> {
     const stickerId = config.INTRO_STICKER_ID?.trim();
 
+    const fallbackMessage = '🤗 <b>Bepul obuna siz uchun!</b>';
+
     if (!stickerId) {
-      await ctx.reply(
-        '🤗 <b>Bepul obuna siz uchun!</b>\nPastdagi tugma orqali keyingi bosqichga o‘ting.',
-        { parse_mode: 'HTML' },
-      );
+      await ctx.reply(fallbackMessage, { parse_mode: 'HTML' });
       return;
     }
 
@@ -770,10 +769,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       logger.warn('Failed to send intro sticker, falling back to text', {
         error,
       });
-      await ctx.reply(
-        '🤗 <b>Bepul obuna siz uchun!</b>\nPastdagi tugma orqali keyingi bosqichga o‘ting.',
-        { parse_mode: 'HTML' },
-      );
+      await ctx.reply(fallbackMessage, { parse_mode: 'HTML' });
     }
   }
 
@@ -970,15 +966,14 @@ ${expirationLabel} ${subscriptionEndDate}`;
           logger.warn('Failed to answer agreement callback', { error });
         }
 
-        const keyboard = new InlineKeyboard()
-          .text('🎁 Uzcard/Humo (30 kun bepul)', 'open_uzcard')
-          .row()
-          .text('🔙 Asosiy menyu', 'main_menu');
+        const keyboard = new InlineKeyboard().text(
+          '🎁 Uzcard/Humo (30 kun bepul)',
+          'open_uzcard',
+        );
 
         const message =
-          '🎁 <b>Uzcard/Humo bilan 30 kunlik bepul obuna!</b>\n\n' +
-          'Karta qo‘shish uchun quyidagi tugmani bosing. ⚡️' +
-          ' Jarayon tugagach botga qaytib, kanalga kirish havolasini olasiz.';
+          '🎁 <b>Uzcard/Humo kartangizni kiriting va 30 kunlik bepul obunani faollashtiring!</b>\n\n' +
+          'Quyidagi tugmani bosing, kartani birlashtiring va darhol premium olamiga qo‘shiling.';
 
         await this.sendOrEditWithFallback(ctx, message, keyboard);
         return;
@@ -1112,23 +1107,21 @@ ${expirationLabel} ${subscriptionEndDate}`;
     });
 
     try {
-      await ctx.answerCallbackQuery({
-        text: 'Havola yuborildi.',
-        show_alert: false,
-      });
+      await ctx.answerCallbackQuery({ url: subscriptionUrl });
     } catch (error) {
-      logger.warn('Failed to acknowledge Uzcard callback', { error });
+      logger.warn('Failed to open Uzcard link via callback, sending message', {
+        error,
+      });
+      await ctx.reply(
+        '👉 <a href="' +
+          subscriptionUrl +
+          '">Havola orqali kartani qo‘shing</a>',
+        {
+          parse_mode: 'HTML',
+          disable_web_page_preview: false,
+        },
+      );
     }
-
-    const message =
-      '🎁 <b>Uzcard/Humo to‘lov sahifasi</b>\n' +
-      `👉 <a href="${subscriptionUrl}">Havola orqali kartani qo‘shing</a>\n\n` +
-      'Kartani qo‘shgach, botga qaytib kanalga kirish uchun tugmani oling.';
-
-    await ctx.reply(message, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: false,
-    });
   }
 
   private async generateSubscriptionUrl(
