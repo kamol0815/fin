@@ -30,4 +30,5 @@ export const config = cleanEnv(process.env, {
   SUBSCRIPTION_MANAGEMENT_BASE_URL: str({ default: '' }),
   SUBSCRIPTION_TERMS_URL: str({ default: 'https://surl.li/takrle' }),
   API_PREFIX: str({ default: 'api' }),
+  INTRO_STICKER_ID: str({ default: '' }),
 });

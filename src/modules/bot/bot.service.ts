@@ -1,5 +1,12 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Bot, Context, InlineKeyboard, session, SessionFlavor } from 'grammy';
+import {
+  Bot,
+  Context,
+  InlineKeyboard,
+  InputFile,
+  session,
+  SessionFlavor,
+} from 'grammy';
 import { config, SubscriptionType } from '../../shared/config';
 import { SubscriptionService } from './services/subscription.service';
 import { SubscriptionMonitorService } from './services/subscription-monitor.service';
@@ -13,13 +20,14 @@ import {
   getClickRedirectLink,
 } from '../../shared/generators/click-redirect-link.generator';
 import { buildSubscriptionCancellationLink, buildSubscriptionManagementLink } from '../../shared/utils/payment-link.util';
-import mongoose from "mongoose";
-import { CardType, UserCardsModel } from "../../shared/database/models/user-cards.model";
+import mongoose from 'mongoose';
+import { CardType, UserCardsModel } from '../../shared/database/models/user-cards.model';
 import { FlowStepType, SubscriptionFlowTracker } from 'src/shared/database/models/subscription.follow.tracker';
 import {
   Transaction,
   TransactionStatus,
 } from '../../shared/database/models/transactions.model';
+import { join } from 'node:path';
 
 interface SessionData {
   pendingSubscription?: {
@@ -29,9 +37,22 @@ interface SessionData {
   selectedService: string;
   mainMenuMessageId?: number;
   pendingOnetimePlanId?: string;
+  introStep?: number;
+  introActive?: boolean;
 }
 
 type BotContext = Context & SessionFlavor<SessionData>;
+
+type IntroSlide =
+  | {
+      type: 'video';
+      filePath: string;
+      caption: (ctx: BotContext) => string;
+    }
+  | {
+      type: 'message';
+      text: (ctx: BotContext) => string;
+    };
 
 @Injectable()
 export class BotService implements OnModuleInit, OnModuleDestroy {
@@ -41,6 +62,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private subscriptionChecker: SubscriptionChecker;
   private readonly ADMIN_IDS = [1487957834, 7554617589, 85939027, 2022496528];
   private readonly subscriptionTermsLink: string;
+  private readonly introSlides: IntroSlide[] = [
+    {
+      type: 'video',
+      filePath: join(process.cwd(), 'mun.mp4'),
+      caption: (ctx) => {
+        const name = ctx.from?.first_name ?? "do'st";
+        return `Assalomu alaykum, ${name}! 👋`;
+      },
+    },
+  ];
 
 
   constructor() {
@@ -498,6 +529,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           return {
             selectedService: 'yulduz',
             hasAgreedToTerms: false, // Initialize as false by default
+            introActive: false,
           };
         },
       }),
@@ -550,6 +582,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     const handlers: { [key: string]: (ctx: BotContext) => Promise<void> } = {
+      intro_done: this.handleIntroDone.bind(this),
       payment_type_onetime: this.handleOneTimePayment.bind(this),
       payment_type_subscription: this.handleSubscriptionPayment.bind(this),
       back_to_payment_types: this.showPaymentTypeSelection.bind(this),
@@ -578,14 +611,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async showMainMenu(ctx: BotContext): Promise<void> {
     ctx.session.hasAgreedToTerms = false;
 
-    const keyboard = new InlineKeyboard()
-      .text("🎯 Obuna bo'lish", 'subscribe')
-      .row()
-      .text('📊 Obuna holati', 'check_status')
-      .row()
-      .text('🛑 Obunani bekor qilish', 'cancel_subscription');
+    const keyboard = new InlineKeyboard().text("🎯 Obuna bo'lish", 'subscribe');
 
-    const message = `Assalomu alaykum, ${ctx.from?.first_name}! 👋\n\n Munajjim premium kontentiga xush kelibsiz 🏆\n\nQuyidagi tugmalardan birini tanlang:`;
+    const message =
+      `Assalomu alaykum, ${ctx.from?.first_name}! 👋\n\n` +
+      'Munajjim Premium galaktikasiga xush kelibsiz! 🏆\n\n' +
+      '🎁 30 kunlik bepul astro-bashoratlar va maxsus tavsiyalarni olish uchun ' +
+      'pastdagi <b>“Obuna bo‘lish”</b> tugmasini bosing.';
 
     const chatId = ctx.chat?.id;
 
@@ -658,7 +690,99 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     ctx.session.mainMenuMessageId = undefined;
 
     await this.createUserIfNotExist(ctx);
+    await this.startIntroduction(ctx);
+  }
+
+  private async startIntroduction(ctx: BotContext): Promise<void> {
+    ctx.session.introStep = 0;
+    ctx.session.introActive = true;
+    await this.showIntroSlide(ctx);
+  }
+
+  private async showIntroSlide(ctx: BotContext): Promise<void> {
+    const step = ctx.session.introStep ?? 0;
+    const slide = this.introSlides[step];
+
+    if (!slide) {
+      ctx.session.introActive = false;
+      ctx.session.introStep = undefined;
+      await this.showMainMenu(ctx);
+      return;
+    }
+
+    const keyboard = this.buildIntroKeyboard(step);
+
+    try {
+      if (slide.type === 'video') {
+        await ctx.replyWithVideo(new InputFile(slide.filePath), {
+          caption: slide.caption(ctx),
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+        await this.sendIntroSticker(ctx);
+      } else {
+        await ctx.reply(slide.text(ctx), {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+      }
+    } catch (error) {
+      logger.error('Failed to deliver intro slide', {
+        step,
+        error,
+      });
+
+      await ctx.reply(
+        "⚠️ Video yuborishda xatolik yuz berdi. Iltimos, /start buyrug'ini qayta yuboring.",
+      );
+      ctx.session.introActive = false;
+      ctx.session.introStep = undefined;
+      await this.showMainMenu(ctx);
+    }
+  }
+
+  private buildIntroKeyboard(_: number): InlineKeyboard {
+    return new InlineKeyboard().text("🚀 Menyuga o'tish", 'intro_done');
+  }
+
+  private async sendIntroSticker(ctx: BotContext): Promise<void> {
+    const stickerId = config.INTRO_STICKER_ID?.trim();
+
+    if (!stickerId) {
+      await ctx.reply("🤗 Obuna bo'lasiz-a? Pastdagi tugma orqali menyuga o'ting.");
+      return;
+    }
+
+    try {
+      await ctx.replyWithSticker(stickerId);
+    } catch (error) {
+      logger.warn('Failed to send intro sticker, falling back to text', {
+        error,
+      });
+      await ctx.reply("🤗 Obuna bo'lasiz-a? Pastdagi tugma orqali menyuga o'ting.");
+    }
+  }
+
+  private async handleIntroDone(ctx: BotContext): Promise<void> {
+    await this.answerAndDisableIntro(ctx);
+
+    ctx.session.introActive = false;
+    ctx.session.introStep = undefined;
     await this.showMainMenu(ctx);
+  }
+
+  private async answerAndDisableIntro(ctx: BotContext): Promise<void> {
+    try {
+      await ctx.answerCallbackQuery();
+    } catch (error) {
+      logger.warn('Failed to acknowledge intro callback', { error });
+    }
+
+    try {
+      await ctx.editMessageReplyMarkup();
+    } catch (error) {
+      logger.warn('Failed to clear intro keyboard', { error });
+    }
   }
 
   private async handleStatus(ctx: BotContext): Promise<void> {
@@ -802,6 +926,69 @@ ${expirationLabel} ${subscriptionEndDate}`;
       }
 
       ctx.session.hasAgreedToTerms = true;
+
+      const selectedService = ctx.session.selectedService ?? 'yulduz';
+      let subscriptionUrl: string | undefined;
+
+      try {
+        const plan = await Plan.findOne({ selectedName: selectedService }).exec();
+        const baseUrl =
+          process.env.UZCARD_ADD_CARD_URL ??
+          'http://213.230.110.176:8989/api/uzcard-api/add-card';
+
+        if (plan) {
+          const params = new URLSearchParams({
+            userId: user._id.toString(),
+            planId: plan._id.toString(),
+            selectedService,
+          });
+          subscriptionUrl = `${baseUrl}?${params.toString()}`;
+        } else {
+          logger.warn('Plan not found for selected service, falling back to payment selection', {
+            selectedService,
+          });
+        }
+      } catch (error) {
+        logger.warn('Failed to build Uzcard/Humo subscription URL', {
+          telegramId,
+          selectedService,
+          error,
+        });
+      }
+
+      if (subscriptionUrl) {
+        try {
+          await ctx.answerCallbackQuery();
+        } catch (error) {
+          logger.warn('Failed to answer agreement callback', { error });
+        }
+
+        const keyboard = new InlineKeyboard()
+          .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionUrl)
+          .row()
+          .text('🔙 Asosiy menyu', 'main_menu');
+
+        const message =
+          '🎁 <b>Uzcard/Humo bilan 30 kunlik bepul obuna!</b>\n\n' +
+          'Karta qo‘shish uchun quyidagi tugmani bosing. ⚡️' +
+          ' Jarayon tugagach botga qaytib, kanalga kirish havolasini olasiz.';
+
+        try {
+          await ctx.editMessageText(message, {
+            reply_markup: keyboard,
+            parse_mode: 'HTML',
+          });
+        } catch (error) {
+          logger.warn('Failed to edit agreement message, sending new one', {
+            error,
+          });
+          await ctx.reply(message, {
+            reply_markup: keyboard,
+            parse_mode: 'HTML',
+          });
+        }
+        return;
+      }
 
       await this.showPaymentTypeSelection(ctx);
     } catch (error) {
@@ -1025,26 +1212,20 @@ ${expirationLabel} ${subscriptionEndDate}`;
         return;
       }
 
-      const keyboard = new InlineKeyboard()
-        .text('🔄 Obuna | 30 kun bepul', 'payment_type_subscription')
-        .row()
-        .text("💰 Bir martalik to'lov", 'payment_type_onetime')
-        .row()
-        .text("🌍 Xalqaro to'lov (Tez kunda)", 'not_supported_international')
-        .row()
-        .text('🔙 Asosiy menyu', 'main_menu');
-
-      await ctx.editMessageText(
-        "🎯 Iltimos, to'lov turini tanlang:\n\n" +
-        "💰 <b>Bir martalik to'lov</b> - 30 kun uchun.\n\n" +
-        "🔄 <b>30 kunlik (obuna)</b> - Avtomatik to'lovlarni yoqish.\n\n" +
-        "🌍 <b>Xalqaro to'lov</b> - <i>Tez orada ishga tushuriladi!</i>\n\n" +
-        "🎁 <b>Obuna to‘lov turini tanlang va 30 kunlik bonusni qo'lga kiriting!</b>",
-        {
-          reply_markup: keyboard,
-          parse_mode: 'HTML',
-        },
+      const keyboard = new InlineKeyboard().text(
+        '🔄 Obuna | 30 kun bepul',
+        'payment_type_subscription',
       );
+
+      const message =
+        "🎯 <b>30 kunlik bepul obuna</b>\n\n" +
+        "Ajoyib! Sizga mosligi tekshirilgan paketni faollashtirish uchun pastdagi tugmani bosing.\n" +
+        "Har 30 kunda to'lov avtomatik amalga oshiriladi, istalgan vaqtda bekor qilishingiz mumkin.";
+
+      await ctx.editMessageText(message, {
+        reply_markup: keyboard,
+        parse_mode: 'HTML',
+      });
     } catch (error) {
       await ctx.answerCallbackQuery(
         "To'lov turlarini ko'rsatishda xatolik yuz berdi.",
