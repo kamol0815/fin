@@ -70,7 +70,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private readonly introSlides: IntroSlide[] = [
     {
       type: 'video',
-      filePath: join(process.cwd(), 'mun.mp4'),
+      filePath: join(process.cwd(), 'qiz.mp4'),
       caption: (ctx) => {
         const name = ctx.from?.first_name ?? "do'st";
         return `Assalomu alaykum, ${name}! 👋`;
@@ -966,10 +966,10 @@ ${expirationLabel} ${subscriptionEndDate}`;
           logger.warn('Failed to answer agreement callback', { error });
         }
 
-        const keyboard = new InlineKeyboard().text(
-          '🎁 Uzcard/Humo (30 kun bepul)',
-          'open_uzcard',
-        );
+        const keyboard = new InlineKeyboard()
+          .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionUrl)
+          .row()
+          .text('🔙 Asosiy menyu', 'main_menu');
 
         const message =
           '🎁 <b>Uzcard/Humo kartangizni kiriting va 30 kunlik bepul obunani faollashtiring!</b>\n\n' +
@@ -1108,20 +1108,11 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
     try {
       await ctx.answerCallbackQuery({ url: subscriptionUrl });
-      return;
     } catch (error) {
-      logger.warn('Failed to open Uzcard link via callback, falling back to message', {
+      logger.warn('Failed to open Uzcard link via callback', {
         error,
       });
     }
-
-    await ctx.reply(
-      '👉 <a href="' + subscriptionUrl + '">Havola orqali kartani qo‘shing</a>',
-      {
-        parse_mode: 'HTML',
-        disable_web_page_preview: false,
-      },
-    );
   }
 
   private async generateSubscriptionUrl(
