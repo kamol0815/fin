@@ -27,6 +27,7 @@ import { FiscalDto } from './dto/uzcard-payment.dto';
 import { getFiscal } from '../../../shared/utils/get-fiscal';
 import { uzcardAuthHash } from '../../../shared/utils/hashing/uzcard-auth-hash';
 import { AddCardDto } from './dto/add-card.dto';
+import mongoose from 'mongoose';
 
 export interface ErrorResponse {
   success: false;
@@ -101,11 +102,31 @@ export class UzCardApiService {
           logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${dto.userId}`);
 
           try {
-            // Find and delete existing card from database
-            const existingCard = await UserCardsModel.findOne({
-              userId: dto.userId,
+            const userObjectId = mongoose.Types.ObjectId.isValid(dto.userId)
+              ? new mongoose.Types.ObjectId(dto.userId)
+              : undefined;
+
+            let existingCard = await UserCardsModel.findOne({
+              ...(userObjectId ? { userId: userObjectId } : { userId: dto.userId }),
               cardType: CardType.UZCARD,
-            });
+            })
+              .sort({ updatedAt: -1 })
+              .exec();
+
+            if (!existingCard) {
+              const user = userObjectId
+                ? await UserModel.findById(userObjectId).select('telegramId').exec()
+                : await UserModel.findById(dto.userId).select('telegramId').exec();
+
+              if (user?.telegramId) {
+                existingCard = await UserCardsModel.findOne({
+                  telegramId: user.telegramId,
+                  cardType: CardType.UZCARD,
+                })
+                  .sort({ updatedAt: -1 })
+                  .exec();
+              }
+            }
 
             if (existingCard && existingCard.UzcardIdForDeleteCard) {
               logger.info(`Found existing card, attempting to delete from Uzcard API...`);
@@ -122,12 +143,13 @@ export class UzCardApiService {
                 logger.warn(`Failed to delete card from Uzcard API, continuing anyway...`);
               }
 
-              // Delete card from our database
-              await UserCardsModel.deleteOne({ _id: existingCard._id });
-              logger.info(`Card deleted from database successfully`);
+              // Mark card as soft-deleted locally so it can be refreshed after confirmation
+              existingCard.isDeleted = true;
+              existingCard.deletedAt = new Date();
+              await existingCard.save();
 
               // Wait a moment for Uzcard system to process
-              await new Promise(resolve => setTimeout(resolve, 1000));
+              await new Promise((resolve) => setTimeout(resolve, 1000));
 
               // Try to add the card again
               logger.info(`Attempting to re-add card...`);
@@ -138,11 +160,14 @@ export class UzCardApiService {
               );
 
               if (retryResponse.data.error) {
-                const retryErrorCode = retryResponse.data.error.errorCode?.toString() || 'unknown';
+                const retryErrorCode =
+                  retryResponse.data.error.errorCode?.toString() || 'unknown';
                 return {
                   success: false,
                   errorCode: retryErrorCode,
-                  message: retryResponse.data.error.errorMessage || this.getErrorMessage(retryErrorCode),
+                  message:
+                    retryResponse.data.error.errorMessage ||
+                    this.getErrorMessage(retryErrorCode),
                 };
               }
 
