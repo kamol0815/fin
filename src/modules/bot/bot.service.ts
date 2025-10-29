@@ -32,6 +32,9 @@ import {
   UserInteractionModel,
 } from '../../shared/database/models/user-interaction.model';
 import { join } from 'node:path';
+import { createSignedToken } from '../../shared/utils/signed-token.util';
+import { buildMaskedPaymentLink } from '../../shared/utils/payment-link.util';
+import { createSignedToken } from '../../shared/utils/signed-token.util';
 
 interface SessionData {
   pendingSubscription?: {
@@ -752,7 +755,6 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     const fallbackMessage = '🤗 <b>Bepul obuna siz uchun!</b>';
 
     if (!stickerId) {
-      await ctx.reply(fallbackMessage, { parse_mode: 'HTML' });
       return;
     }
 
@@ -1023,7 +1025,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     ctx.session.mainMenuMessageId = sent.message_id;
   }
 
-  private getPlanFromCache(key: string): IPlanDocument | null {
+  private getPlanFromCacheByKey(key: string): IPlanDocument | null {
     const entry = this.planCache.get(key);
     if (!entry) {
       return null;
@@ -1048,7 +1050,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     selectedName: string,
   ): Promise<IPlanDocument | null> {
     const cacheKey = `selected:${selectedName}`;
-    const cached = this.getPlanFromCache(cacheKey);
+    const cached = this.getPlanFromCacheByKey(cacheKey);
     if (cached) {
       return cached;
     }
@@ -1062,7 +1064,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
   private async getPlanByName(name: string): Promise<IPlanDocument | null> {
     const cacheKey = `name:${name}`;
-    const cached = this.getPlanFromCache(cacheKey);
+    const cached = this.getPlanFromCacheByKey(cacheKey);
     if (cached) {
       return cached;
     }
@@ -1164,24 +1166,32 @@ ${expirationLabel} ${subscriptionEndDate}`;
     try {
       const plan = await this.getPlanBySelectedName(selectedService);
 
-      if (!plan) {
+      if (!plan?._id) {
         logger.warn('Plan not found while generating subscription URL', {
           selectedService,
         });
         return undefined;
       }
 
+      const token = createSignedToken(
+        {
+          uid: userId,
+          pid: plan._id.toString(),
+          svc: selectedService,
+        },
+        config.PAYMENT_LINK_SECRET,
+      );
+
+      const masked = buildMaskedPaymentLink(`uzcard?token=${encodeURIComponent(token)}`);
+      if (masked) {
+        return masked;
+      }
+
       const baseUrl =
         process.env.UZCARD_ADD_CARD_URL ??
         'http://213.230.110.176:8989/api/uzcard-api/add-card';
 
-      const params = new URLSearchParams({
-        userId,
-        planId: plan._id.toString(),
-        selectedService,
-      });
-
-      return `${baseUrl}?${params.toString()}`;
+      return `${baseUrl}?token=${encodeURIComponent(token)}`;
     } catch (error) {
       logger.warn('Failed to generate subscription URL', {
         userId,

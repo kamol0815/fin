@@ -27,12 +27,20 @@ import { FiscalDto } from './dto/uzcard-payment.dto';
 import { getFiscal } from '../../../shared/utils/get-fiscal';
 import { uzcardAuthHash } from '../../../shared/utils/hashing/uzcard-auth-hash';
 import { AddCardDto } from './dto/add-card.dto';
+import { verifySignedToken } from '../../../shared/utils/signed-token.util';
+import { config } from '../../../shared/config';
 import mongoose from 'mongoose';
 
 export interface ErrorResponse {
   success: false;
   errorCode: string;
   message: string;
+}
+
+interface UzcardTokenPayload {
+  uid: string;
+  pid: string;
+  svc: string;
 }
 
 @Injectable()
@@ -53,8 +61,19 @@ export class UzCardApiService {
   async addCard(dto: AddCardDto): Promise<AddCardResponseDto | ErrorResponse> {
     const headers = this.getHeaders();
 
+    const { uid: userId, pid: planId, svc: selectedService } =
+      this.decodeAccessToken(dto.token);
+
+    const normalizedUserId = mongoose.Types.ObjectId.isValid(userId)
+      ? new mongoose.Types.ObjectId(userId)
+      : userId;
+    const normalizedUserIdValue =
+      normalizedUserId instanceof mongoose.Types.ObjectId
+        ? normalizedUserId.toHexString()
+        : normalizedUserId;
+
     const payload: ExternalAddCardDto = {
-      userId: dto.userId,
+      userId: userId,
       cardNumber: dto.cardNumber,
       expireDate: dto.expireDate,
       userPhone: dto.userPhone,
@@ -99,16 +118,12 @@ export class UzCardApiService {
 
         // If error is -108 (card already exists), try to delete and re-add
         if (errorCode === '-108') {
-          logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${dto.userId}`);
+          logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${normalizedUserIdValue}`);
 
           try {
-            const userObjectId = mongoose.Types.ObjectId.isValid(dto.userId)
-              ? new mongoose.Types.ObjectId(dto.userId)
-              : undefined;
-
             // First, try to find existing card by userId
             let existingCard = await UserCardsModel.findOne({
-              ...(userObjectId ? { userId: userObjectId } : { userId: dto.userId }),
+              userId: normalizedUserId,
               cardType: CardType.UZCARD
             })
               .sort({ updatedAt: -1 })
@@ -116,9 +131,9 @@ export class UzCardApiService {
 
             // If not found by userId, try by telegramId
             if (!existingCard) {
-              const user = userObjectId
-                ? await UserModel.findById(userObjectId).select('telegramId').exec()
-                : await UserModel.findById(dto.userId).select('telegramId').exec();
+              const user = await UserModel.findById(normalizedUserId)
+                .select('telegramId')
+                .exec();
 
               if (user?.telegramId) {
                 existingCard = await UserCardsModel.findOne({
@@ -222,7 +237,7 @@ export class UzCardApiService {
                     logger.warn(`Persistent card conflict detected. This card may exist on UzCard servers but not in our database.`);
 
                     // Try different potential card ID patterns that might work for deletion
-                    await this.tryAdvancedCardCleanup(dto.cardNumber, dto.userId, headers);
+                    await this.tryAdvancedCardCleanup(dto.cardNumber, normalizedUserIdValue, headers);
 
                     // One more final retry after advanced cleanup
                     await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -289,13 +304,14 @@ export class UzCardApiService {
     request: ConfirmCardDto,
   ): Promise<ConfirmCardResponseDto | ErrorResponse> {
     try {
+      const { uid: userId, pid: planId, svc: selectedService } =
+        this.decodeAccessToken(request.token);
+
       const payload = {
         session: request.session,
         otp: request.otp,
         isTrusted: 1,
       };
-
-      logger.info(`Selected sport: ${request.selectedService} in confirmCard`);
 
       const headers = this.getHeaders();
 
@@ -327,11 +343,9 @@ export class UzCardApiService {
       const balance = card.balance;
       const expireDate = card.expireDate;
 
-      const user = await UserModel.findOne({
-        _id: request.userId,
-      });
+      const user = await UserModel.findById(userId);
       if (!user) {
-        logger.error(`User not found for ID: ${request.userId}`);
+        logger.error(`User not found for ID: ${userId}`);
         return {
           success: false,
           errorCode: 'user_not_found',
@@ -339,7 +353,7 @@ export class UzCardApiService {
         };
       }
 
-      const plan = await Plan.findById(request.planId);
+      const plan = await Plan.findById(planId);
 
       if (!plan) {
         logger.error(`Plan not found`);
@@ -417,14 +431,12 @@ export class UzCardApiService {
 
       logger.info(`User card created: ${JSON.stringify(userCard)}`);
 
-      if (request.userId) {
-        await this.botService.handleSubscriptionSuccess(
-          request.userId,
-          request.planId,
-          30,
-          request.selectedService,
-        );
-      }
+      await this.botService.handleSubscriptionSuccess(
+        userId,
+        planId,
+        30,
+        selectedService,
+      );
 
       return {
         success: true,
@@ -470,8 +482,9 @@ export class UzCardApiService {
     }
   }
 
-  async resendCode(session: string, userId: string) {
+  async resendCode(session: string, token: string) {
     try {
+      const { uid: userId } = this.decodeAccessToken(token);
       const payload = {
         session: session,
       };
@@ -781,6 +794,19 @@ export class UzCardApiService {
       Authorization: authHeader,
       Language: 'uz',
     };
+  }
+
+  private decodeAccessToken(token: string): UzcardTokenPayload {
+    if (!token) {
+      throw new Error('Missing Uzcard token');
+    }
+
+    try {
+      return verifySignedToken<UzcardTokenPayload>(token, config.PAYMENT_LINK_SECRET);
+    } catch (error) {
+      logger.error('Failed to verify Uzcard token', { error });
+      throw new Error('Invalid token');
+    }
   }
 
   private async deleteUzcardCardFromProvider(
