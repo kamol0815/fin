@@ -1010,37 +1010,13 @@ ${expirationLabel} ${subscriptionEndDate}`;
     }
   }
 
-  private async buildTermsMessage(ctx: BotContext) {
+  private buildTermsMessage(ctx: BotContext) {
     const termsUrl = this.subscriptionTermsLink || "https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29";
 
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
-      .row();
-
-    let subscriptionUrl: string | undefined;
-
-    const telegramId = ctx.from?.id;
-    if (telegramId) {
-      const user = await UserModel.findOne({ telegramId });
-      const selectedService = ctx.session.selectedService || 'yulduz';
-
-      if (user) {
-        subscriptionUrl = await this.generateSubscriptionUrl(
-          user._id.toString(),
-          selectedService,
-        );
-
-        if (subscriptionUrl) {
-          ctx.session.pendingSubscriptionUrl = subscriptionUrl;
-        }
-      }
-    }
-
-    if (subscriptionUrl) {
-      keyboard.url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', subscriptionUrl);
-    } else {
-      keyboard.text('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', 'agree_terms');
-    }
+      .row()
+      .text('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', 'agree_terms');
 
     const message =
       '📜 <b>Foydalanish shartlari:</b>\n\n' +
@@ -1056,7 +1032,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     options: { preferEdit?: boolean } = {},
   ): Promise<void> {
     ctx.session.pendingSubscriptionUrl = undefined;
-    const { message, keyboard } = await this.buildTermsMessage(ctx);
+    const { message, keyboard } = this.buildTermsMessage(ctx);
 
     if (options.preferEdit && ctx.callbackQuery) {
       try {

@@ -70,7 +70,7 @@ export class UzCardApiService {
       };
     }
 
-    const { uid: userId } = access;
+    const { uid: userId, pid: planId, svc: selectedService } = access;
 
     const headers = this.getHeaders();
 
@@ -120,14 +120,19 @@ export class UzCardApiService {
         if (errorCode === '-108') {
           logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${userId}`);
 
+          const lastFour = dto.cardNumber.slice(-4);
+          let existingCardSnapshot: Record<string, any> | undefined;
+
           try {
-            const lastFour = dto.cardNumber.slice(-4);
 
             // Try to find existing card in our database regardless of deletion status
             const existingCard = await UserCardsModel.findOne({
               userId: userId,
               cardType: CardType.UZCARD,
             }).sort({ updatedAt: -1 });
+            existingCardSnapshot = existingCard
+              ? (existingCard.toObject() as Record<string, any>)
+              : undefined;
 
             if (existingCard) {
               await UserCardsModel.deleteOne({ _id: existingCard._id });
@@ -182,11 +187,11 @@ export class UzCardApiService {
                   typeof providerCardNumber === 'string' &&
                   providerCardNumber.slice(-4) === lastFour
                 ) {
-              const removed = await this.deleteUzcardCardFromProvider(
-                providerCardId,
-                headers,
-                userId,
-              );
+                  const removed = await this.deleteUzcardCardFromProvider(
+                    providerCardId,
+                    headers,
+                    userId,
+                  );
                   logger.info(
                     removed
                       ? `Removed Uzcard card ${providerCardId} from provider via list lookup`
@@ -227,6 +232,19 @@ export class UzCardApiService {
             };
           } catch (cleanupError) {
             logger.error(`Error during card cleanup and retry: ${cleanupError}`);
+          }
+
+          const reuseResult = await this.reactivateExistingCard({
+            userId,
+            planId,
+            selectedService,
+            headers,
+            lastFour,
+            existingCardSnapshot,
+          });
+
+          if (reuseResult) {
+            return reuseResult;
           }
         }
 
@@ -774,6 +792,120 @@ export class UzCardApiService {
       token,
       config.PAYMENT_LINK_SECRET,
     );
+  }
+
+  private async reactivateExistingCard(params: {
+    userId: string;
+    planId: string;
+    selectedService: string;
+    headers: Record<string, string>;
+    lastFour: string;
+    existingCardSnapshot?: Record<string, any>;
+  }): Promise<AddCardResponseDto | null> {
+    const { userId, planId, selectedService, headers, lastFour, existingCardSnapshot } = params;
+
+    try {
+      const user = await UserModel.findById(userId);
+      const plan = await Plan.findById(planId);
+
+      if (!user || !plan) {
+        logger.warn('Unable to reactivate card: user or plan not found', {
+          userId,
+          planId,
+        });
+        return null;
+      }
+
+      const providerCards = await this.getUserCardList(userId, headers);
+      const providerCard = providerCards.find((card: any) => {
+        const providerNumber = card?.number || card?.cardNumber || '';
+        return typeof providerNumber === 'string' && providerNumber.slice(-4) === lastFour;
+      });
+
+      const cardToken = (providerCard?.cardId ?? providerCard?.userCardId ?? existingCardSnapshot?.cardToken)?.toString();
+
+      if (!cardToken) {
+        logger.warn('Unable to determine card token for reactivation', {
+          userId,
+        });
+        return null;
+      }
+
+      const incompleteNumber =
+        providerCard?.number ||
+        providerCard?.cardNumber ||
+        existingCardSnapshot?.incompleteCardNumber ||
+        `****${lastFour}`;
+
+      const uzcardId = providerCard?.cardId ?? existingCardSnapshot?.UzcardId;
+      const uzcardIdForDelete = providerCard?.userCardId ?? providerCard?.cardId ?? existingCardSnapshot?.UzcardIdForDeleteCard;
+      const uzcardBalance = providerCard?.balance ?? existingCardSnapshot?.UzcardBalance;
+
+      const payload = {
+        telegramId: user.telegramId,
+        username: user.username ? user.username : undefined,
+        incompleteCardNumber: incompleteNumber,
+        cardToken,
+        expireDate: providerCard?.expireDate || existingCardSnapshot?.expireDate || '',
+        verificationCode: existingCardSnapshot?.verificationCode,
+        verified: true,
+        verifiedDate: new Date(),
+        cardType: CardType.UZCARD,
+        userId: user._id,
+        planId: plan._id,
+        UzcardIsTrusted:
+          providerCard?.isTrusted ?? existingCardSnapshot?.UzcardIsTrusted ?? true,
+        UzcardBalance:
+          typeof uzcardBalance === 'number'
+            ? uzcardBalance
+            : Number(uzcardBalance) || undefined,
+        UzcardId:
+          uzcardId !== undefined ? Number(uzcardId) : undefined,
+        UzcardOwner:
+          providerCard?.owner ?? existingCardSnapshot?.UzcardOwner,
+        UzcardIncompleteNumber: incompleteNumber,
+        UzcardIdForDeleteCard:
+          uzcardIdForDelete !== undefined ? Number(uzcardIdForDelete) : undefined,
+        isDeleted: false,
+        deletedAt: undefined,
+      };
+
+      await UserCardsModel.findOneAndUpdate(
+        { cardToken },
+        payload,
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+
+      const hasActiveSubscription = await UserSubscription.exists({
+        user: user._id,
+        isActive: true,
+      });
+
+      if (!hasActiveSubscription) {
+        await this.botService.handleSubscriptionSuccess(
+          userId,
+          plan._id.toString(),
+          30,
+          selectedService,
+        );
+      } else {
+        logger.info('User already has an active subscription, skipping bonus activation', {
+          userId,
+        });
+      }
+
+      return {
+        success: true,
+        reusedCard: true,
+        message: "Bu karta allaqachon bog'langan. Obuna faollashtirildi.",
+      };
+    } catch (reactivationError) {
+      logger.error('Failed to reactivate existing Uzcard card', {
+        userId,
+        error: reactivationError,
+      });
+      return null;
+    }
   }
 
   private async deleteUzcardCardFromProvider(

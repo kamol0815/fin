@@ -132,6 +132,18 @@
       display: none;
     }
 
+    .global-success {
+      color: #3bb273;
+      font-size: 14px;
+      margin-top: 10px;
+      margin-bottom: 10px;
+      text-align: center;
+      padding: 10px;
+      background-color: rgba(59, 178, 115, 0.1);
+      border-radius: 6px;
+      display: none;
+    }
+
     .card-icon {
       position: absolute;
       right: 10px;
@@ -161,6 +173,7 @@
     </div>
 
     <div class="global-error" id="globalError"></div>
+    <div class="global-success" id="globalSuccess"></div>
 
     <form id="cardForm">
       <div class="form-group">
@@ -259,6 +272,7 @@
         const globalErrorEl = document.getElementById('globalError');
         globalErrorEl.textContent = message;
         globalErrorEl.style.display = 'block';
+        hideGlobalSuccess();
 
         // Automatically hide after 5 seconds
         setTimeout(() => {
@@ -266,9 +280,18 @@
         }, 5000);
       }
 
-      // Function to hide global error messages
       function hideGlobalError() {
         document.getElementById('globalError').style.display = 'none';
+      }
+
+      function showGlobalSuccess(message) {
+        const globalSuccessEl = document.getElementById('globalSuccess');
+        globalSuccessEl.textContent = message;
+        globalSuccessEl.style.display = 'block';
+      }
+
+      function hideGlobalSuccess() {
+        document.getElementById('globalSuccess').style.display = 'none';
       }
 
       // Form submission
@@ -279,6 +302,7 @@
         // Reset errors
         document.querySelectorAll('.error').forEach(el => el.style.display = 'none');
         hideGlobalError();
+        hideGlobalSuccess();
 
         // Get values
         const cardNumber = cardInput.value.replace(/\s/g, '');
@@ -334,6 +358,14 @@
             const data = await response.json();
 
             if (data.success) {
+              if (data.reusedCard) {
+                showGlobalSuccess(data.message || "Bu karta allaqachon bog'langan. Obuna faollashtirildi.");
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Yakunlandi';
+                form.reset();
+                return;
+              }
+
               const session = data.session;
               const otpSentPhone = data.otpSentPhone;
 
