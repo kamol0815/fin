@@ -33,7 +33,10 @@ import {
 } from '../../shared/database/models/user-interaction.model';
 import { join } from 'node:path';
 import { createSignedToken } from '../../shared/utils/signed-token.util';
-import { buildMaskedPaymentLink } from '../../shared/utils/payment-link.util';
+import {
+  buildMaskedPaymentLink,
+  buildSubscriptionManagementLink,
+} from '../../shared/utils/payment-link.util';
 import { createSignedToken } from '../../shared/utils/signed-token.util';
 
 interface SessionData {
@@ -538,6 +541,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             hasAgreedToTerms: false, // Initialize as false by default
             introActive: false,
             pendingSubscriptionUrl: undefined,
+            introVideoSent: false,
           };
         },
       }),
@@ -711,10 +715,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async showIntroSlide(ctx: BotContext): Promise<void> {
+    const slide = this.introSlides[0];
+
     if (ctx.session.introVideoSent) {
       return;
     }
-    const slide = this.introSlides[0];
+
+    ctx.session.introVideoSent = true;
 
     try {
       if (slide.type === 'video') {
@@ -728,7 +735,6 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-      ctx.session.introVideoSent = true;
       void this.sendIntroSticker(ctx);
 
       const keyboard = this.buildIntroKeyboard();
@@ -743,6 +749,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         userId: ctx.from?.id,
         error: error.message,
       });
+
+      ctx.session.introVideoSent = false;
 
       await ctx.reply(
         "⚠️ Video yuklanmadi. Iltimos, /start buyrug'ini qayta yuboring.",
@@ -1110,11 +1118,13 @@ ${expirationLabel} ${subscriptionEndDate}`;
     await this.logInteraction(ctx, InteractionEventType.VIEW_TERMS);
 
     try {
-      await ctx.answerCallbackQuery({
-        url:
-          this.subscriptionTermsLink ||
-          'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29',
-      });
+      const internalLink = buildSubscriptionManagementLink('links/terms');
+      const targetUrl =
+        internalLink ||
+        this.subscriptionTermsLink ||
+        'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29';
+
+      await ctx.answerCallbackQuery({ url: targetUrl });
       return;
     } catch (error) {
       logger.warn('Failed to open terms URL via callback', { error });
