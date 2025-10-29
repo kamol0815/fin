@@ -137,6 +137,7 @@ export class UzCardApiService {
                 const removed = await this.deleteUzcardCardFromProvider(
                   existingCard.UzcardIdForDeleteCard,
                   headers,
+                  userId,
                 );
                 logger.info(
                   removed
@@ -147,6 +148,7 @@ export class UzCardApiService {
                 const removed = await this.deleteUzcardCardFromProvider(
                   existingCard.cardToken,
                   headers,
+                  userId,
                 );
                 logger.info(
                   removed
@@ -180,10 +182,11 @@ export class UzCardApiService {
                   typeof providerCardNumber === 'string' &&
                   providerCardNumber.slice(-4) === lastFour
                 ) {
-                  const removed = await this.deleteUzcardCardFromProvider(
-                    providerCardId,
-                    headers,
-                  );
+              const removed = await this.deleteUzcardCardFromProvider(
+                providerCardId,
+                headers,
+                userId,
+              );
                   logger.info(
                     removed
                       ? `Removed Uzcard card ${providerCardId} from provider via list lookup`
@@ -365,6 +368,8 @@ export class UzCardApiService {
         existingCard.UzcardOwner = owner;
         existingCard.UzcardIncompleteNumber = incompleteCardNumber;
         existingCard.UzcardIdForDeleteCard = cardIdForDelete;
+        existingCard.isDeleted = false;
+        existingCard.deletedAt = undefined;
         userCard = await existingCard.save();
       } else {
         // Create new card
@@ -387,6 +392,8 @@ export class UzCardApiService {
           UzcardOwner: owner,
           UzcardIncompleteNumber: incompleteCardNumber,
           UzcardIdForDeleteCard: cardIdForDelete,
+          isDeleted: false,
+          deletedAt: undefined,
         });
       }
 
@@ -770,56 +777,150 @@ export class UzCardApiService {
   }
 
   private async deleteUzcardCardFromProvider(
-    cardId: string,
+    cardId: string | number,
     headers: Record<string, string>,
+    userId?: string,
   ): Promise<boolean> {
-    if (!cardId) {
+    const normalizedId = cardId?.toString().trim();
+    if (!normalizedId) {
       return false;
     }
 
-    try {
-      const postResponse = await axios.post(
-        `${this.baseUrl}/UserCard/deleteUserCard`,
-        { userCardId: cardId },
-        { headers },
-      );
-
-      if (postResponse.data?.error) {
-        logger.warn('Uzcard deleteUserCard (POST) returned error', {
-          error: postResponse.data.error,
-        });
-      } else {
-        return postResponse.data?.result?.success !== false;
-      }
-    } catch (error) {
-      logger.debug('Uzcard deleteUserCard (POST) failed, attempting DELETE', {
-        message: (error as Error).message,
-      });
-    }
-
-    try {
-      const deleteResponse = await axios.delete(
-        `${this.baseUrl}/UserCard/deleteUserCard`,
-        {
-          headers,
-          params: { userCardId: cardId },
+    const attempts: Array<{
+      description: string;
+      request: () => Promise<boolean>;
+    }> = [
+      {
+        description: 'POST JSON userCardId',
+        request: async () => {
+          const response = await axios.post(
+            `${this.baseUrl}/UserCard/deleteUserCard`,
+            { userCardId: normalizedId },
+            { headers },
+          );
+          return response.data?.result?.success === true;
         },
-      );
+      },
+      {
+        description: 'POST JSON cardId',
+        request: async () => {
+          const response = await axios.post(
+            `${this.baseUrl}/UserCard/deleteUserCard`,
+            { cardId: normalizedId },
+            { headers },
+          );
+          return response.data?.result?.success === true;
+        },
+      },
+      {
+        description: 'POST JSON cardId + userCardId + userId',
+        request: async () => {
+          const response = await axios.post(
+            `${this.baseUrl}/UserCard/deleteUserCard`,
+            {
+              cardId: normalizedId,
+              userCardId: normalizedId,
+              userId,
+            },
+            { headers },
+          );
+          return response.data?.result?.success === true;
+        },
+      },
+      {
+        description: 'POST query params',
+        request: async () => {
+          const response = await axios.post(
+            `${this.baseUrl}/UserCard/deleteUserCard`,
+            undefined,
+            {
+              headers,
+              params: { userCardId: normalizedId, cardId: normalizedId, userId },
+            },
+          );
+          return response.data?.result?.success === true;
+        },
+      },
+      {
+        description: 'POST form-urlencoded',
+        request: async () => {
+          const body = new URLSearchParams({
+            userCardId: normalizedId,
+            cardId: normalizedId,
+          });
+          if (userId) {
+            body.append('userId', userId);
+          }
+          const response = await axios.post(
+            `${this.baseUrl}/UserCard/deleteUserCard`,
+            body.toString(),
+            {
+              headers: {
+                ...headers,
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+            },
+          );
+          return response.data?.result?.success === true;
+        },
+      },
+      {
+        description: 'DELETE query params',
+        request: async () => {
+          const response = await axios.delete(
+            `${this.baseUrl}/UserCard/deleteUserCard`,
+            {
+              headers,
+              params: { userCardId: normalizedId, cardId: normalizedId, userId },
+            },
+          );
+          return response.data?.result?.success === true;
+        },
+      },
+      {
+        description: 'GET query params',
+        request: async () => {
+          const response = await axios.get(
+            `${this.baseUrl}/UserCard/deleteUserCard`,
+            {
+              headers,
+              params: { userCardId: normalizedId, cardId: normalizedId, userId },
+            },
+          );
+          return response.data?.result?.success === true;
+        },
+      },
+      {
+        description: 'POST path parameter',
+        request: async () => {
+          const response = await axios.post(
+            `${this.baseUrl}/UserCard/deleteUserCard/${normalizedId}`,
+            { userId },
+            { headers },
+          );
+          return response.data?.result?.success === true;
+        },
+      },
+    ];
 
-      if (deleteResponse.data?.error) {
-        logger.warn('Uzcard deleteUserCard (DELETE) returned error', {
-          error: deleteResponse.data.error,
+    for (const attempt of attempts) {
+      try {
+        const success = await attempt.request();
+        if (success) {
+          logger.info(`Uzcard deleteUserCard succeeded via ${attempt.description}`);
+          return true;
+        }
+        logger.warn(`Uzcard deleteUserCard attempt failed (${attempt.description})`);
+      } catch (error) {
+        logger.warn(`Uzcard deleteUserCard attempt threw (${attempt.description})`, {
+          message: (error as Error).message,
+          status: (error as any)?.response?.status,
+          data: (error as any)?.response?.data,
         });
-        return false;
       }
-
-      return deleteResponse.data?.result?.success !== false;
-    } catch (error) {
-      logger.warn('Failed to delete Uzcard card via DELETE', {
-        message: (error as Error).message,
-      });
-      return false;
     }
+
+    return false;
   }
 
   private async getUserCardList(
