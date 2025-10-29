@@ -984,7 +984,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
         }
 
         const keyboard = new InlineKeyboard()
-          .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionUrl)
+          .url('🎁 Obuna bolish Uzcard/Humo (30 kun bepul)', subscriptionUrl)
           .row()
           .text('🔙 Asosiy menyu', 'main_menu');
 
@@ -1013,13 +1013,13 @@ ${expirationLabel} ${subscriptionEndDate}`;
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
       .row()
-      .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionStaticUrl);
+      .url('🎁 Obuna bolish Uzcard/Humo (30 kun bepul)', subscriptionStaticUrl);
 
     const message =
-      '📜 <b>Foydalanish shartlari va shartlar:</b>\n\n' +
+      '📜 <b>Foydalanish shartlari:</b>\n\n' +
       "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
       `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
-      'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
+      'Foydalanish shartlari tugmasini bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Obuna bo\'lish Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
 
     return { message, keyboard };
   }
