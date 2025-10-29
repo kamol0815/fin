@@ -717,100 +717,31 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async showIntroSlide(ctx: BotContext): Promise<void> {
-    const step = ctx.session.introStep ?? 0;
-    const slide = this.introSlides[step];
-
-    if (!slide) {
-      ctx.session.introActive = false;
-      ctx.session.introStep = undefined;
-      await this.showMainMenu(ctx);
-      return;
-    }
-
-    const keyboard = this.buildIntroKeyboard(step);
+    const slide = this.introSlides[0];
 
     try {
       if (slide.type === 'video') {
-        // Log video sending attempt
-        logger.info(`Sending intro video to user: ${ctx.from?.id}`);
-
-        // Send "typing" action first for immediate response
-        await ctx.replyWithChatAction('typing');
-
-        // Small delay to ensure action is processed
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        // Send video with highly optimized settings for instant auto-play
         await ctx.replyWithVideo(new InputFile(slide.filePath), {
           caption: slide.caption(ctx),
           parse_mode: 'HTML',
-          reply_markup: keyboard,
-          width: 854,
-          height: 480,
-          duration: 50,
-          supports_streaming: true,
-          // Force thumbnail generation for faster preview
-          thumbnail: undefined,
-          // Disable notifications to avoid interruptions
-          disable_notification: false,
-          // Additional optimization flags
-          protect_content: false,
         });
-
-        logger.info(`Intro video sent successfully to user: ${ctx.from?.id}`);
-        
-        // Send sticker after a brief delay to not interfere with video loading
-        setTimeout(async () => {
-          try {
-            await this.sendIntroSticker(ctx);
-          } catch (stickerError) {
-            logger.warn('Failed to send intro sticker', { error: stickerError.message });
-          }
-        }, 1000);
-
       } else {
         await ctx.reply(slide.text(ctx), {
           parse_mode: 'HTML',
-          reply_markup: keyboard,
         });
       }
+
+      await this.sendIntroSticker(ctx);
+      await this.handleIntroDone(ctx);
     } catch (error) {
-      logger.error('Failed to deliver intro slide', {
-        step,
+      logger.error('Failed to deliver intro content', {
         userId: ctx.from?.id,
         error: error.message,
       });
 
-      // Fallback to text message if video fails
-      try {
-        const fallbackMessage = (
-          `🌟 Assalomu alaykum, ${ctx.from?.first_name ?? "do'st"}! 👋\n\n` +
-          `🔮 <b>Munajjim Premium</b>ga xush kelibsiz!\n\n` +
-          `✨ Bu yerda sizni kutayotgan imkoniyatlar:\n` +
-          `• 🎯 Shaxsiy astro-bashoratlar\n` +
-          `• 🌙 Kunlik horoskop va tavsiyalar\n` +
-          `• ⭐ Premium fal va interpretatsiyalar\n` +
-          `• 🔥 30 kunlik BEPUL sinov davri\n\n` +
-          `📱 Davom etish uchun pastdagi tugmani bosing!\n\n` +
-          `⚠️ <i>Video yuklanmadi, lekin barcha funksiyalar ishlaydi!</i>`
-        );
-
-        await ctx.reply(fallbackMessage, {
-          parse_mode: 'HTML',
-          reply_markup: keyboard,
-        });
-
-        await this.sendIntroSticker(ctx);
-      } catch (fallbackError) {
-        logger.error('Fallback intro message also failed', {
-          userId: ctx.from?.id,
-          error: fallbackError.message
-        });
-
-        ctx.session.introActive = false;
-        ctx.session.introStep = undefined;
-        await this.showMainMenu(ctx);
-      }
+      await ctx.reply(
+        "⚠️ Video yuklanmadi. Iltimos, /start buyrug'ini qayta yuboring.",
+      );
     }
   }
 
@@ -1124,22 +1055,13 @@ ${expirationLabel} ${subscriptionEndDate}`;
     await this.logInteraction(ctx, InteractionEventType.VIEW_TERMS);
 
     try {
-      await ctx.answerCallbackQuery({
-        text: 'Havola yuborildi.',
-        show_alert: false,
-      });
+      await ctx.answerCallbackQuery({ url: this.subscriptionTermsLink });
+      return;
     } catch (error) {
       logger.warn('Failed to acknowledge view terms callback', { error });
     }
 
-    const message =
-      '📄 <b>Foydalanish shartlari havolasi:</b>\n' +
-      `${this.subscriptionTermsLink}`;
-
-    await ctx.reply(message, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: false,
-    });
+    await ctx.reply(this.subscriptionTermsLink);
   }
 
   private async handleOpenUzcard(ctx: BotContext): Promise<void> {
