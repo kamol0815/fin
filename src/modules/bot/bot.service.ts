@@ -119,7 +119,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return derived;
     }
 
-    return 'https://telegra.ph/Yulduzlar-Bashorati-Premium--OMMAVIY-OFERTA-06-26';
+    return 'https://telegra.ph/Yulduzlar-Bashorati-Premium-OMMAVIY-OFERTA-06-26';
   }
 
   async onModuleInit(): Promise<void> {
@@ -1119,7 +1119,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
     const targetUrl =
       this.subscriptionTermsLink ||
-      'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29';
+      "https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29";
 
     try {
       await ctx.answerCallbackQuery({ url: targetUrl });

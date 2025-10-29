@@ -9,7 +9,7 @@ export class LinksController {
   redirectToTerms() {
     const target = config.SUBSCRIPTION_TERMS_URL?.trim();
     return {
-      url: target || 'https://telegra.ph/Yulduzlar-Bashorati-Premium--OMMAVIY-OFERTA-06-26',
+      url: target || 'https://telegra.ph/Yulduzlar-Bashorati-Premium-OMMAVIY-OFERTA-06-26',
       statusCode: 302,
     };
   }
