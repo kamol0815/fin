@@ -64,13 +64,19 @@ export class UzCardApiService {
     const { uid: userId, pid: planId, svc: selectedService } =
       this.decodeAccessToken(dto.token);
 
-    const normalizedUserId = mongoose.Types.ObjectId.isValid(userId)
-      ? new mongoose.Types.ObjectId(userId)
-      : userId;
-    const normalizedUserIdValue =
-      normalizedUserId instanceof mongoose.Types.ObjectId
-        ? normalizedUserId.toHexString()
-        : normalizedUserId;
+    // Normalize userId for consistent handling
+    let normalizedUserId: mongoose.Types.ObjectId | string;
+    let normalizedUserIdValue: string;
+
+    if (mongoose.Types.ObjectId.isValid(userId)) {
+      normalizedUserId = new mongoose.Types.ObjectId(userId);
+      normalizedUserIdValue = normalizedUserId.toHexString();
+    } else {
+      normalizedUserId = userId;
+      normalizedUserIdValue = userId;
+    }
+
+    logger.info(`addCard called with userId: ${userId}, normalized: ${normalizedUserIdValue}`);
 
     const payload: ExternalAddCardDto = {
       userId: userId,
@@ -272,20 +278,50 @@ export class UzCardApiService {
   async confirmCard(
     request: ConfirmCardDto,
   ): Promise<ConfirmCardResponseDto | ErrorResponse> {
-    try {
-      const { uid: userId, pid: planId, svc: selectedService } =
-        this.decodeAccessToken(request.token);
+    const { uid: userId, pid: planId, svc: selectedService } =
+      this.decodeAccessToken(request.token);
 
-      const payload = {
-        session: request.session,
-        otp: request.otp,
-        isTrusted: 1,
+    // Normalize userId same as in addCard method
+    let normalizedUserId: mongoose.Types.ObjectId | string;
+    let normalizedUserIdValue: string;
+
+    if (mongoose.Types.ObjectId.isValid(userId)) {
+      normalizedUserId = new mongoose.Types.ObjectId(userId);
+      normalizedUserIdValue = normalizedUserId.toHexString();
+    } else {
+      normalizedUserId = userId;
+      normalizedUserIdValue = userId;
+    }
+
+    // Validate input parameters before making API call
+    if (!request.session || !request.otp) {
+      logger.error(`Missing required parameters: session=${!!request.session}, otp=${!!request.otp}`);
+      return {
+        success: false,
+        errorCode: 'missing_parameters',
+        message: 'Session yoki tasdiqlash kodi etishmayapti. Iltimos, qaytadan urinib ko\'ring.',
       };
+    }
+
+    const payload = {
+      session: request.session,
+      otp: request.otp,
+      isTrusted: 1,
+    };
+
+    logger.info(`confirmCard called for userId: ${userId}, normalized: ${normalizedUserIdValue}`);
+    logger.info(`confirmCard API request payload: ${JSON.stringify(payload)}`);
+
+    try {
 
       const headers = this.getHeaders();
+      const apiUrl = `${this.baseUrl}/UserCard/confirmUserCardCreate`;
+
+      logger.info(`Making UzCard confirmCard API request to: ${apiUrl}`);
+      logger.info(`Request headers: ${JSON.stringify(headers)}`);
 
       const response = await axios.post(
-        `${this.baseUrl}/UserCard/confirmUserCardCreate`,
+        apiUrl,
         payload,
         { headers },
       );
@@ -294,6 +330,7 @@ export class UzCardApiService {
 
       if (responseData.error) {
         const errorCode = responseData.error.errorCode?.toString() || 'unknown';
+        logger.error(`UzCard confirmCard API error: ${errorCode} - ${responseData.error.errorMessage}`);
         return {
           success: false,
           errorCode: errorCode,
@@ -312,15 +349,29 @@ export class UzCardApiService {
       const balance = card.balance;
       const expireDate = card.expireDate;
 
-      const user = await UserModel.findById(userId);
+      // Use normalized userId for database lookup - try both formats for maximum compatibility
+      let user = await UserModel.findById(normalizedUserId);
+
+      if (!user && mongoose.Types.ObjectId.isValid(userId)) {
+        // If ObjectId format didn't work, try string format
+        user = await UserModel.findById(userId);
+      }
+
       if (!user) {
-        logger.error(`User not found for ID: ${userId}`);
+        // Try finding by telegramId as fallback
+        user = await UserModel.findOne({ telegramId: userId });
+      }
+
+      if (!user) {
+        logger.error(`User not found for any ID format: original=${userId}, normalized=${normalizedUserIdValue}, ObjectId=${normalizedUserId}`);
         return {
           success: false,
           errorCode: 'user_not_found',
           message: "Foydalanuvchi topilmadi. Iltimos qaytadan urinib ko'ring.",
         };
       }
+
+      logger.info(`Found user for confirmCard: ${user._id} (telegram: ${user.telegramId})`);
 
       const plan = await Plan.findById(planId);
 
@@ -400,8 +451,9 @@ export class UzCardApiService {
 
       logger.info(`User card created: ${JSON.stringify(userCard)}`);
 
+      // Use normalized userId for handleSubscriptionSuccess
       await this.botService.handleSubscriptionSuccess(
-        userId,
+        normalizedUserIdValue,
         planId,
         30,
         selectedService,
@@ -414,7 +466,59 @@ export class UzCardApiService {
       };
     } catch (error) {
       // @ts-ignore
-      logger.error(`Error in confirmCard: ${error?.message}`);
+      logger.error(`Error in confirmCard: ${error?.message}`, {
+        status: error?.response?.status,
+        statusText: error?.response?.statusText,
+        data: error?.response?.data,
+        userId: normalizedUserIdValue,
+        session: request.session
+      });
+
+      // Handle 400 Bad Request specifically
+      // @ts-ignore
+      if (error.response?.status === 400) {
+        logger.error(`UzCard API returned 400 Bad Request for confirmCard`, {
+          responseData: error.response?.data,
+          requestPayload: payload,
+          userId: normalizedUserIdValue,
+          session: request.session
+        });
+
+        // Check if response contains specific error info
+        // @ts-ignore
+        if (error.response?.data?.error) {
+          // @ts-ignore
+          const errorCode = error.response.data.error.errorCode?.toString() || 'bad_request';
+          // @ts-ignore
+          let errorMessage = error.response.data.error.errorMessage || 'Tasdiqlash kodida xatolik';
+
+          // Provide user-friendly Uzbek messages for common error codes
+          if (errorCode === '-137' || errorCode === 'INVALID_OTP') {
+            errorMessage = 'Tasdiqlash kodi noto\'g\'ri. Iltimos, qaytadan urinib ko\'ring.';
+          } else if (errorCode === '-139' || errorCode === 'SESSION_EXPIRED') {
+            errorMessage = 'Sessiya muddati tugagan. Iltimos, kartani qaytadan qo\'shing.';
+          } else if (errorCode === '-140' || errorCode === 'OTP_EXPIRED') {
+            errorMessage = 'SMS kod muddati tugagan. Iltimos, yangi kod so\'rang.';
+          } else if (errorMessage.toLowerCase().includes('session')) {
+            errorMessage = 'Sessiya muddati tugagan. Iltimos, kartani qaytadan qo\'shing.';
+          } else if (errorMessage.toLowerCase().includes('otp') || errorMessage.toLowerCase().includes('код')) {
+            errorMessage = 'SMS kod noto\'g\'ri yoki muddati tugagan. Iltimos, qaytadan urinib ko\'ring.';
+          }
+
+          return {
+            success: false,
+            errorCode: errorCode,
+            message: errorMessage,
+          };
+        }
+
+        // Generic 400 error handling with helpful message
+        return {
+          success: false,
+          errorCode: 'bad_request',
+          message: 'Tasdiqlash jarayonida xatolik yuz berdi. SMS kod noto\'g\'ri yoki sessiya muddati tugagan bo\'lishi mumkin. Iltimos, kartani qaytadan qo\'shib ko\'ring.',
+        };
+      }
 
       // Check if it's a formatted UzCard API error response
       // @ts-ignore
@@ -766,13 +870,16 @@ export class UzCardApiService {
 
   private decodeAccessToken(token: string): UzcardTokenPayload {
     if (!token) {
+      logger.error('Missing Uzcard token in request');
       throw new Error('Missing Uzcard token');
     }
 
     try {
-      return verifySignedToken<UzcardTokenPayload>(token, config.PAYMENT_LINK_SECRET);
+      const decoded = verifySignedToken<UzcardTokenPayload>(token, config.PAYMENT_LINK_SECRET);
+      logger.info(`Token decoded successfully: uid=${decoded.uid}, pid=${decoded.pid}, svc=${decoded.svc}`);
+      return decoded;
     } catch (error) {
-      logger.error('Failed to verify Uzcard token', { error });
+      logger.error('Failed to verify Uzcard token', { error: error.message, token: token.substring(0, 20) + '...' });
       throw new Error('Invalid token');
     }
   }

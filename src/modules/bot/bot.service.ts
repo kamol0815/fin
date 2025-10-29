@@ -19,7 +19,11 @@ import {
   ClickRedirectParams,
   getClickRedirectLink,
 } from '../../shared/generators/click-redirect-link.generator';
-import { buildSubscriptionCancellationLink, buildSubscriptionManagementLink } from '../../shared/utils/payment-link.util';
+import {
+  buildSubscriptionCancellationLink,
+  buildSubscriptionManagementLink,
+  buildMaskedPaymentLink
+} from '../../shared/utils/payment-link.util';
 import mongoose from 'mongoose';
 import { CardType, UserCardsModel } from '../../shared/database/models/user-cards.model';
 import { FlowStepType, SubscriptionFlowTracker } from 'src/shared/database/models/subscription.follow.tracker';
@@ -33,11 +37,6 @@ import {
 } from '../../shared/database/models/user-interaction.model';
 import { join } from 'node:path';
 import { createSignedToken } from '../../shared/utils/signed-token.util';
-import {
-  buildMaskedPaymentLink,
-  buildSubscriptionManagementLink,
-} from '../../shared/utils/payment-link.util';
-import { createSignedToken } from '../../shared/utils/signed-token.util';
 
 interface SessionData {
   pendingSubscription?: {
@@ -50,6 +49,7 @@ interface SessionData {
   introStep?: number;
   introActive?: boolean;
   pendingSubscriptionUrl?: string;
+  introVideoSent?: boolean;
 }
 
 type BotContext = Context & SessionFlavor<SessionData>;
@@ -377,6 +377,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     logger.warn(
       `Selected service in handleSubscriptionSuccess ${selectedService}`,
     );
+    logger.info(`handleSubscriptionSuccess called with userId: ${userId}, planId: ${planId}`);
+
     try {
       const plan = await Plan.findById(planId);
       if (!plan) {
@@ -384,9 +386,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const user = await UserModel.findById(userId);
+      let user = await UserModel.findById(userId);
+      if (!user && mongoose.Types.ObjectId.isValid(userId)) {
+        // Try with ObjectId if string didn't work
+        user = await UserModel.findById(new mongoose.Types.ObjectId(userId));
+      }
       if (!user) {
-        logger.error(`User not found with ID: ${userId}`);
+        logger.error(`User not found with ID: ${userId} in handleSubscriptionSuccess (tried both string and ObjectId)`);
         return;
       }
 
