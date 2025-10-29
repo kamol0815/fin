@@ -152,12 +152,12 @@
   </style>
 </head>
 
-<body data-token="<%= token %>" data-service="<%= selectedService %>">
+<body>
   <div class="container">
     <div class="header">
       <div class="logo"> <img src="/img.png" alt="Munajjim premium Logo">
       </div>
-      <h1><%= planName %></h1>
+      <h1>Munajjim premium</h1>
     </div>
 
     <div class="global-error" id="globalError"></div>
@@ -201,13 +201,10 @@
   <script>
     document.addEventListener('DOMContentLoaded', function () {
       // Get URL parameters
-      const token = document.body.dataset.token;
-      const selectedService = document.body.dataset.service;
-
-      if (!token) {
-        alert('Havola eskirgan. Iltimos, bot orqali qayta oching.');
-        return;
-      }
+      const urlParams = new URLSearchParams(window.location.search);
+      const userId = urlParams.get('userId');
+      const planId = urlParams.get('planId');
+      const selectedService = urlParams.get('selectedService');
 
 
       // Card number formatting
@@ -321,7 +318,8 @@
               cardNumber: cardNumber,
               expireDate: expireDate,
               userPhone: phoneNumber,
-              token,
+              userId: userId,
+              planId: planId,
             };
 
             const response = await fetch('add-card', {
@@ -339,7 +337,7 @@
               const otpSentPhone = data.otpSentPhone;
 
               // Redirect to SMS verification page
-              window.location.href = `uzcard-verify-sms?session=${session}&phone=${otpSentPhone}&token=${encodeURIComponent(token)}`;
+              window.location.href = `uzcard-verify-sms?session=${session}&phone=${otpSentPhone}&userId=${userId}&planId=${planId}&selectedService=${selectedService}`;
             } else {
               // Handle specific error codes
               switch (data.errorCode) {
