@@ -1117,18 +1117,18 @@ ${expirationLabel} ${subscriptionEndDate}`;
   private async handleViewTerms(ctx: BotContext): Promise<void> {
     await this.logInteraction(ctx, InteractionEventType.VIEW_TERMS);
 
-    try {
-      const internalLink = buildSubscriptionManagementLink('links/terms');
-      const targetUrl =
-        internalLink ||
-        this.subscriptionTermsLink ||
-        'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29';
+    const targetUrl =
+      this.subscriptionTermsLink ||
+      'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29';
 
+    try {
       await ctx.answerCallbackQuery({ url: targetUrl });
       return;
     } catch (error) {
       logger.warn('Failed to open terms URL via callback', { error });
     }
+
+    await ctx.reply(targetUrl);
   }
 
   private async handleOpenUzcard(ctx: BotContext): Promise<void> {
