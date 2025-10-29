@@ -1122,18 +1122,45 @@ ${expirationLabel} ${subscriptionEndDate}`;
       "https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29";
 
     try {
-      await ctx.answerCallbackQuery({ url: targetUrl });
-    } catch (error) {
-      logger.warn('Failed to open terms URL via callback', { error });
-      // If callback fails, show a simple notification instead of sending link to chat
-      try {
-        await ctx.answerCallbackQuery({
-          text: '⚠️ Havolani ochib bo\'lmadi. Iltimos, qayta urinib ko\'ring.',
-          show_alert: true,
-        } as any);
-      } catch (fallbackError) {
-        logger.error('Failed to show fallback notification', { fallbackError });
+      // Answer the callback query first
+      await ctx.answerCallbackQuery();
+
+      // Create a keyboard with the URL button
+      const keyboard = new InlineKeyboard()
+        .url('📄 Foydalanish shartlarini o\'qish', targetUrl)
+        .row()
+        .text('🔙 Orqaga', 'subscribe');
+
+      // Send or edit message with the URL button
+      const message =
+        '📜 <b>Foydalanish shartlari</b>\n\n' +
+        'Quyidagi tugmani bosib, foydalanish shartlari bilan tanishib chiqishingiz mumkin.';
+
+      if (ctx.callbackQuery?.message) {
+        try {
+          await ctx.editMessageText(message, {
+            reply_markup: keyboard,
+            parse_mode: 'HTML',
+          });
+        } catch (error) {
+          logger.warn('Failed to edit terms message, sending new one', { error });
+          await ctx.reply(message, {
+            reply_markup: keyboard,
+            parse_mode: 'HTML',
+          });
+        }
+      } else {
+        await ctx.reply(message, {
+          reply_markup: keyboard,
+          parse_mode: 'HTML',
+        });
       }
+    } catch (error) {
+      logger.error('Failed to handle view terms', { error });
+      await ctx.answerCallbackQuery({
+        text: '⚠️ Xatolik yuz berdi. Iltimos, qayta urinib ko\'ring.',
+        show_alert: true,
+      } as any);
     }
   }
 
