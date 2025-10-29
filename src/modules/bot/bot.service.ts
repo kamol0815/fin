@@ -119,7 +119,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return derived;
     }
 
-    return 'https://telegra.ph/Yulduzlar-Bashorati-Premium-OMMAVIY-OFERTA-06-26';
+    return 'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29';
   }
 
   async onModuleInit(): Promise<void> {
