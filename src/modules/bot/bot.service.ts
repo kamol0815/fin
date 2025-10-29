@@ -700,6 +700,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     ctx.session.mainMenuMessageId = undefined;
 
     await this.createUserIfNotExist(ctx);
+    ctx.session.introVideoSent = false;
     await this.startIntroduction(ctx);
   }
 
@@ -710,6 +711,9 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async showIntroSlide(ctx: BotContext): Promise<void> {
+    if (ctx.session.introVideoSent) {
+      return;
+    }
     const slide = this.introSlides[0];
 
     try {
@@ -724,6 +728,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
+      ctx.session.introVideoSent = true;
       void this.sendIntroSticker(ctx);
 
       const keyboard = this.buildIntroKeyboard();
