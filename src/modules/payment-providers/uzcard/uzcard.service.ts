@@ -116,163 +116,134 @@ export class UzCardApiService {
         const errorCode =
           error.response.data.error.errorCode?.toString() || 'unknown';
 
-        // If error is -108 (card already exists), try to delete and re-add
+        // If error is -108 (card already exists), handle re-subscription scenario
         if (errorCode === '-108') {
-          logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${normalizedUserIdValue}`);
+          logger.warn(`Card already exists error (-108) for user: ${normalizedUserIdValue}, card ending: ${payload.cardNumber.slice(-4)}`);
 
           try {
-            // First, try to find existing card by userId
+            // Check if this exact card belongs to the same user (common after subscription cancellation)
             let existingCard = await UserCardsModel.findOne({
-              userId: normalizedUserId,
+              incompleteCardNumber: payload.cardNumber,
               cardType: CardType.UZCARD
-            })
-              .sort({ updatedAt: -1 })
-              .exec();
+            });
 
-            // If not found by userId, try by telegramId
+            // Also check by userId if card number doesn't match (in case card number is stored differently)
             if (!existingCard) {
-              const user = await UserModel.findById(normalizedUserId)
-                .select('telegramId')
-                .exec();
-
-              if (user?.telegramId) {
-                existingCard = await UserCardsModel.findOne({
-                  telegramId: user.telegramId,
-                  cardType: CardType.UZCARD,
-                })
-                  .sort({ updatedAt: -1 })
-                  .exec();
-              }
-            }
-
-            // Also try to find by card number (last 4 digits match)
-            if (!existingCard) {
-              const last4Digits = dto.cardNumber.slice(-4);
               existingCard = await UserCardsModel.findOne({
-                incompleteCardNumber: { $regex: last4Digits + '$' },
-                cardType: CardType.UZCARD,
-              })
-                .sort({ updatedAt: -1 })
-                .exec();
+                userId: normalizedUserId,
+                cardType: CardType.UZCARD
+              }).sort({ updatedAt: -1 });
             }
 
-            if (existingCard && existingCard.UzcardIdForDeleteCard) {
-              logger.info(`Found existing card (ID: ${existingCard.UzcardIdForDeleteCard}), attempting to delete from Uzcard API...`);
+            // If card belongs to same user, this is likely re-subscription after cancellation
+            if (existingCard && existingCard.userId?.toString() === normalizedUserIdValue) {
+              logger.info(`Found user's own card in database. Handling re-subscription scenario...`);
 
-              // Delete card from Uzcard API
-              const deletedRemotely = await this.deleteUzcardCardFromProvider(
-                existingCard.UzcardIdForDeleteCard,
-                headers,
-              );
+              // Delete from local database first
+              await UserCardsModel.deleteOne({ _id: existingCard._id });
+              logger.info(`Removed existing card record from local database`);
 
-              if (deletedRemotely) {
-                logger.info(`Card deleted from Uzcard API successfully`);
-              } else {
-                logger.warn(`Failed to delete card from Uzcard API, but continuing anyway...`);
+              // Try to delete from UzCard API if we have deletion ID
+              if (existingCard.UzcardIdForDeleteCard) {
+                logger.info(`Attempting to delete card from UzCard API (ID: ${existingCard.UzcardIdForDeleteCard})`);
+                const deleted = await this.deleteUzcardCardFromProvider(existingCard.UzcardIdForDeleteCard, headers);
+                if (deleted) {
+                  logger.info(`Successfully deleted card from UzCard API`);
+                } else {
+                  logger.warn(`Could not delete from UzCard API, but continuing with re-add attempt`);
+                }
               }
 
-              // Remove card from local database
-              await UserCardsModel.deleteOne({ _id: existingCard._id });
-
-              // Wait for Uzcard system to process the deletion
+              // Wait for changes to propagate
               await new Promise((resolve) => setTimeout(resolve, 2000));
 
-              // Try to add the card again
-              logger.info(`Attempting to re-add card after deletion...`);
+              // Retry adding the card
               const retryResponse = await axios.post(
                 `${this.baseUrl}/UserCard/createUserCard`,
                 payload,
                 { headers },
               );
 
-              if (retryResponse.data.error) {
-                const retryErrorCode =
-                  retryResponse.data.error.errorCode?.toString() || 'unknown';
-                logger.error(`Retry failed with error ${retryErrorCode}: ${retryResponse.data.error.errorMessage}`);
+              if (!retryResponse.data.error) {
+                logger.info(`Card successfully re-added after cleanup for re-subscription`);
                 return {
-                  success: false,
-                  errorCode: retryErrorCode,
-                  message:
-                    retryResponse.data.error.errorMessage ||
-                    this.getErrorMessage(retryErrorCode),
+                  session: retryResponse.data.result.session,
+                  otpSentPhone: retryResponse.data.result.otpSentPhone,
+                  success: true,
                 };
-              }
-
-              logger.info(`Card re-added successfully after deletion`);
-              return {
-                session: retryResponse.data.result.session,
-                otpSentPhone: retryResponse.data.result.otpSentPhone,
-                success: true,
-              };
-            } else {
-              logger.warn(`No existing card found in database with deletion ID, but Uzcard says card exists. Card conflict detected.`);
-
-              // Since the UzCard API deletion methods are returning 405 errors,
-              // it means the API doesn't support card deletion in the way we're trying.
-              // Let's try a simpler approach - just wait and retry a few times
-              // as sometimes the card conflict resolves itself.
-
-              logger.info(`Attempting simple retry approach for card conflict...`);
-              await new Promise((resolve) => setTimeout(resolve, 3000));
-
-              try {
-                const retryResponse = await axios.post(
-                  `${this.baseUrl}/UserCard/createUserCard`,
-                  payload,
-                  { headers },
-                );
-
-                if (!retryResponse.data.error) {
-                  logger.info(`Card added successfully after wait and retry`);
-                  return {
-                    session: retryResponse.data.result.session,
-                    otpSentPhone: retryResponse.data.result.otpSentPhone,
-                    success: true,
-                  };
-                } else {
-                  logger.error(`Retry still failed after wait: ${retryResponse.data.error.errorMessage}`);
-
-                  // If it's still error -108, we have a persistent card conflict
-                  if (retryResponse.data.error.errorCode === -108) {
-                    logger.warn(`Persistent card conflict detected after first retry.`);
-
-                    // Try one more time with a longer wait - sometimes UzCard system needs more time
-                    logger.info(`Attempting final retry with longer wait period...`);
-                    await new Promise((resolve) => setTimeout(resolve, 8000));
-
-                    try {
-                      const finalRetry = await axios.post(
-                        `${this.baseUrl}/UserCard/createUserCard`,
-                        payload,
-                        { headers },
-                      );
-
-                      if (!finalRetry.data.error) {
-                        logger.info(`Card added successfully after extended wait`);
-                        return {
-                          session: finalRetry.data.result.session,
-                          otpSentPhone: finalRetry.data.result.otpSentPhone,
-                          success: true,
-                        };
-                      }
-                    } catch (finalRetryError) {
-                      logger.error(`Final retry failed after extended wait: ${finalRetryError?.message}`);
-                    }
-
-                    // Return a specific error that provides helpful guidance
-                    return {
-                      success: false,
-                      errorCode: '-108',
-                      message: 'Bu karta allaqachon tizimda ro\'yxatdan o\'tgan. Iltimos, boshqa karta qo\'shing yoki bir necha daqiqa kutib qaytadan urinib ko\'ring. Muammo davom etsa @munajjimbot_admin bilan bog\'laning.',
-                    };
-                  }
-                }
-              } catch (retryError) {
-                logger.error(`Error during retry attempt: ${retryError}`);
+              } else {
+                logger.warn(`Re-add failed after cleanup: ${retryResponse.data.error.errorMessage}`);
               }
             }
+            // If card belongs to different user, reject with clear message
+            else if (existingCard && existingCard.userId?.toString() !== normalizedUserIdValue) {
+              logger.warn(`Card belongs to different user (${existingCard.userId}), rejecting request`);
+              return {
+                success: false,
+                errorCode: 'card_belongs_to_other_user',
+                message: 'Bu karta boshqa foydalanuvchi tomonidan ishlatilmoqda. Iltimos, boshqa karta qo\'shing.',
+              };
+            }
+
+            // If no local record or cleanup failed, try advanced cleanup methods
+            logger.info(`No local card record found or cleanup failed. Attempting UzCard API cleanup methods...`);
+
+            // Try advanced cleanup methods to resolve card conflicts
+            await this.tryAdvancedCardCleanup(payload.cardNumber, normalizedUserIdValue, headers);
+
+            // Wait for cleanup to complete
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+
+            // First retry after advanced cleanup
+            const retryAfterCleanup = await axios.post(
+              `${this.baseUrl}/UserCard/createUserCard`,
+              payload,
+              { headers },
+            );
+
+            if (!retryAfterCleanup.data.error) {
+              logger.info(`Card added successfully after advanced cleanup`);
+              return {
+                session: retryAfterCleanup.data.result.session,
+                otpSentPhone: retryAfterCleanup.data.result.otpSentPhone,
+                success: true,
+              };
+            }
+
+            // If still failing, UzCard system might need more time to process
+            logger.info(`Cleanup retry failed, attempting final retry with extended wait...`);
+            await new Promise((resolve) => setTimeout(resolve, 7000));
+
+            const finalRetry = await axios.post(
+              `${this.baseUrl}/UserCard/createUserCard`,
+              payload,
+              { headers },
+            );
+
+            if (!finalRetry.data.error) {
+              logger.info(`Card added successfully after extended wait`);
+              return {
+                session: finalRetry.data.result.session,
+                otpSentPhone: finalRetry.data.result.otpSentPhone,
+                success: true,
+              };
+            }
+
+            // All attempts failed - provide helpful error message
+            logger.error(`All card conflict resolution attempts failed. Final error: ${finalRetry.data.error?.errorMessage}`);
+            return {
+              success: false,
+              errorCode: '-108',
+              message: 'Bu karta allaqachon tizimda ro\'yxatdan o\'tgan. Agar ilgari ushbu kartani ishlatgan bo\'lsangiz, bir necha daqiqa kutib qaytadan urinib ko\'ring. Muammo davom etsa, boshqa karta qo\'shing yoki @munajjimbot_admin bilan bog\'laning.',
+            };
+
           } catch (cleanupError) {
-            logger.error(`Error during card cleanup and retry: ${cleanupError}`);
+            logger.error(`Error during card conflict resolution: ${cleanupError}`);
+            return {
+              success: false,
+              errorCode: 'cleanup_error',
+              message: 'Karta qo\'shishda muammo yuz berdi. Iltimos, qaytadan urinib ko\'ring yoki boshqa karta ishlatib ko\'ring.',
+            };
           }
         }
 
