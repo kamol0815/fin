@@ -187,13 +187,13 @@
   </style>
 </head>
 
-<body>
+<body data-token="<%= token %>" data-service="<%= selectedService %>" data-plan-name="<%= planName %>">
   <div class="container">
     <div class="header">
       <div class="logo">
         <img src="/img.png" alt="Munajjim premium Logo">
       </div>
-      <h1>Munajjim premium</h1>
+      <h1><%= planName %></h1>
       <p><span id="phoneNumber">+998 ** *** 4567</span> raqamiga yuborilgan SMS kodni kiriting</p>
     </div>
 
@@ -223,13 +223,18 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', function () {
+      const token = document.body.dataset.token;
+      const selectedService = document.body.dataset.service;
+
+      if (!token) {
+        alert('Havola eskirgan. Iltimos, bot orqali qayta oching.');
+        return;
+      }
+
       // Get URL parameters
       const urlParams = new URLSearchParams(window.location.search);
       const session = urlParams.get('session');
       const phoneNumber = urlParams.get('phone');
-      const userId = urlParams.get('userId');
-      const planId = urlParams.get('planId');
-      const selectedService = urlParams.get('selectedService');
 
       // Display masked phone number
       if (phoneNumber) {
@@ -321,7 +326,7 @@
 
           const queryParams = new URLSearchParams({
             session: session,
-            userId: userId
+            token: token
           });
 
           const response = await fetch(`resend-otp?${queryParams.toString()}`, {
@@ -378,9 +383,7 @@
           const requestData = {
             session: session,
             otp: smsCode,
-            userId: userId,
-            planId: planId,
-            selectedService: selectedService
+            token: token,
           };
 
           // Call API to verify OTP

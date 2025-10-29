@@ -6,7 +6,5 @@ export class ConfirmCardDto {
 
   @IsNotEmpty()
   otp: string;
-  planId: string;
-  selectedService: string;
-  userId: string;
+  token: string;
 }

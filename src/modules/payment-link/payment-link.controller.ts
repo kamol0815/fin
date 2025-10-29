@@ -19,6 +19,21 @@ export class PaymentLinkController {
     return res.redirect(this.resolveRedirectUrl(token, 'payme'));
   }
 
+  @Get('uzcard')
+  redirectToUzcard(@Query('token') token: string, @Res() res: Response) {
+    if (!token) {
+      throw new BadRequestException('Missing redirect token');
+    }
+
+    try {
+      verifySignedToken(token, config.PAYMENT_LINK_SECRET);
+    } catch (error) {
+      throw new BadRequestException('Invalid or expired redirect token');
+    }
+
+    return res.redirect(`/api/uzcard-api/add-card?token=${encodeURIComponent(token)}`);
+  }
+
   private resolveRedirectUrl(token: string, provider: 'click' | 'payme'): string {
     if (!token) {
       throw new BadRequestException('Missing redirect token');

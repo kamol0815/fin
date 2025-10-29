@@ -26,6 +26,14 @@ import { FiscalDto } from './dto/uzcard-payment.dto';
 import { getFiscal } from '../../../shared/utils/get-fiscal';
 import { uzcardAuthHash } from '../../../shared/utils/hashing/uzcard-auth-hash';
 import { AddCardDto } from './dto/add-card.dto';
+import { verifySignedToken } from '../../../shared/utils/signed-token.util';
+import { config } from '../../../shared/config';
+
+interface UzcardAccessPayload {
+  uid: string;
+  pid: string;
+  svc: string;
+}
 
 export interface ErrorResponse {
   success: false;
@@ -49,10 +57,25 @@ export class UzCardApiService {
   //   }
 
   async addCard(dto: AddCardDto): Promise<AddCardResponseDto | ErrorResponse> {
+    let access: UzcardAccessPayload;
+    try {
+      access = this.decodeAccessToken(dto.token);
+    } catch (error) {
+      logger.warn('Invalid Uzcard token in addCard', { error });
+      return {
+        success: false,
+        errorCode: 'invalid_link',
+        message:
+          'Havola eskirgan. Bot orqali obuna sahifasini qayta oching.',
+      };
+    }
+
+    const { uid: userId } = access;
+
     const headers = this.getHeaders();
 
     const payload: ExternalAddCardDto = {
-      userId: dto.userId,
+      userId,
       cardNumber: dto.cardNumber,
       expireDate: dto.expireDate,
       userPhone: dto.userPhone,
@@ -64,8 +87,6 @@ export class UzCardApiService {
         payload,
         { headers },
       );
-
-      console.log(apiResponse)
 
       if (apiResponse.data.error) {
         const errorCode =
@@ -97,20 +118,20 @@ export class UzCardApiService {
 
         // If error is -108 (card already exists), try to delete and re-add
         if (errorCode === '-108') {
-          logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${dto.userId}`);
+          logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${userId}`);
 
           try {
             const lastFour = dto.cardNumber.slice(-4);
 
             // Try to find existing card in our database regardless of deletion status
             const existingCard = await UserCardsModel.findOne({
-              userId: dto.userId,
+              userId: userId,
               cardType: CardType.UZCARD,
             }).sort({ updatedAt: -1 });
 
             if (existingCard) {
               await UserCardsModel.deleteOne({ _id: existingCard._id });
-              logger.info(`Removed existing Uzcard entry from database for user ${dto.userId}`);
+              logger.info(`Removed existing Uzcard entry from database for user ${userId}`);
 
               if (existingCard.UzcardIdForDeleteCard) {
                 const removed = await this.deleteUzcardCardFromProvider(
@@ -134,18 +155,18 @@ export class UzCardApiService {
                 );
               }
             } else {
-              logger.warn(`No local Uzcard card found for user ${dto.userId}, attempting provider cleanup only`);
+              logger.warn(`No local Uzcard card found for user ${userId}, attempting provider cleanup only`);
             }
 
             // Remove any soft-deleted Uzcard cards for the user to avoid duplicate leftovers
             await UserCardsModel.deleteMany({
-              userId: dto.userId,
+              userId: userId,
               cardType: CardType.UZCARD,
               isDeleted: true,
             });
 
             // Attempt fallback cleanup by scanning provider card list
-            const providerCards = await this.getUserCardList(dto.userId, headers);
+            const providerCards = await this.getUserCardList(userId, headers);
             if (providerCards.length) {
               for (const card of providerCards) {
                 const providerCardNumber = card?.number || card?.cardNumber || '';
@@ -231,6 +252,21 @@ export class UzCardApiService {
   async confirmCard(
     request: ConfirmCardDto,
   ): Promise<ConfirmCardResponseDto | ErrorResponse> {
+    let access: UzcardAccessPayload;
+    try {
+      access = this.decodeAccessToken(request.token);
+    } catch (error) {
+      logger.warn('Invalid Uzcard token in confirmCard', { error });
+      return {
+        success: false,
+        errorCode: 'invalid_link',
+        message:
+          'Havola eskirgan. Bot orqali obuna sahifasini qayta oching.',
+      };
+    }
+
+    const { uid: userId, pid: planId, svc: selectedService } = access;
+
     try {
       const payload = {
         session: request.session,
@@ -238,7 +274,7 @@ export class UzCardApiService {
         isTrusted: 1,
       };
 
-      logger.info(`Selected sport: ${request.selectedService} in confirmCard`);
+      logger.info(`Selected sport: ${selectedService} in confirmCard`);
 
       const headers = this.getHeaders();
 
@@ -271,10 +307,10 @@ export class UzCardApiService {
       const expireDate = card.expireDate;
 
       const user = await UserModel.findOne({
-        _id: request.userId,
+        _id: userId,
       });
       if (!user) {
-        logger.error(`User not found for ID: ${request.userId}`);
+        logger.error(`User not found for ID: ${userId}`);
         return {
           success: false,
           errorCode: 'user_not_found',
@@ -282,7 +318,7 @@ export class UzCardApiService {
         };
       }
 
-      const plan = await Plan.findById(request.planId);
+      const plan = await Plan.findById(planId);
 
       if (!plan) {
         logger.error(`Plan not found`);
@@ -356,12 +392,12 @@ export class UzCardApiService {
 
       logger.info(`User card created: ${JSON.stringify(userCard)}`);
 
-      if (request.userId) {
+      if (userId) {
         await this.botService.handleSubscriptionSuccess(
-          request.userId,
-          request.planId,
+          userId,
+          plan._id.toString(),
           30,
-          request.selectedService,
+          selectedService,
         );
       }
 
@@ -409,7 +445,19 @@ export class UzCardApiService {
     }
   }
 
-  async resendCode(session: string, userId: string) {
+  async resendCode(session: string, token: string) {
+    try {
+      this.decodeAccessToken(token);
+    } catch (error) {
+      logger.warn('Invalid Uzcard token in resendCode', { error });
+      return {
+        success: false,
+        errorCode: 'invalid_link',
+        message:
+          'Havola eskirgan. Bot orqali obuna sahifasini qayta oching.',
+      };
+    }
+
     try {
       const payload = {
         session: session,
@@ -708,6 +756,17 @@ export class UzCardApiService {
       subscribedBy: CardType.UZCARD,
       paidAmount: plan.price, // Add the missing paidAmount field
     });
+  }
+
+  private decodeAccessToken(token: string): UzcardAccessPayload {
+    if (!token) {
+      throw new Error('missing_access_token');
+    }
+
+    return verifySignedToken<UzcardAccessPayload>(
+      token,
+      config.PAYMENT_LINK_SECRET,
+    );
   }
 
   private async deleteUzcardCardFromProvider(

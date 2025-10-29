@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -11,6 +12,15 @@ import { AddCardDto } from './dto/add-card.dto';
 import { AddCardResponseDto } from './dto/response/add-card-response.dto';
 import { ConfirmCardDto } from './dto/request/confirm-card.dto';
 import { ErrorResponse, UzCardApiService } from './uzcard.service';
+import { verifySignedToken } from '../../../shared/utils/signed-token.util';
+import { config } from '../../../shared/config';
+import { Plan } from '../../../shared/database/models/plans.model';
+
+interface UzcardAccessPayload {
+  uid: string;
+  pid: string;
+  svc: string;
+}
 
 @Controller('uzcard-api')
 export class UzCardApiController {
@@ -19,33 +29,33 @@ export class UzCardApiController {
   @Get('/add-card')
   @Header('Content-Type', 'text/html')
   @Render('uzcard/payment-card-insert')
-  renderPaymentPage(
-    @Query('userId') userId: string,
-    @Query('planId') planId: string,
-    @Query('selectedService') selectedService: string,
-  ) {
+  async renderPaymentPage(@Query('token') token?: string) {
+    const payload = await this.decodeToken(token);
+    const plan = await Plan.findById(payload.pid).lean();
+
     return {
-      userId,
-      planId,
-      selectedService,
+      token,
+      planName: plan?.name ?? 'Munajjim premium',
+      selectedService: payload.svc,
     };
   }
 
   @Get('/uzcard-verify-sms')
   @Render('uzcard/sms-code-confirm')
-  renderSmsVerificationPage(
+  async renderSmsVerificationPage(
     @Query('session') session: string,
     @Query('phone') phone: string,
-    @Query('userId') userId: string,
-    @Query('planId') planId: string,
-    @Query('selectedService') selectedService: string,
+    @Query('token') token?: string,
   ) {
+    const payload = await this.decodeToken(token);
+    const plan = await Plan.findById(payload.pid).lean();
+
     return {
       session,
       phone,
-      userId,
-      planId,
-      selectedService,
+      token,
+      planName: plan?.name ?? 'Munajjim premium',
+      selectedService: payload.svc,
     };
   }
 
@@ -77,8 +87,23 @@ export class UzCardApiController {
   @Get('resend-otp')
   async resendCode(
     @Query('session') session: string,
-    @Query('userId') userId: string,
+    @Query('token') token: string,
   ) {
-    return await this.uzCardApiService.resendCode(session, userId);
+    return await this.uzCardApiService.resendCode(session, token);
+  }
+
+  private async decodeToken(token?: string): Promise<UzcardAccessPayload> {
+    if (!token) {
+      throw new BadRequestException('Obuna havolasi eskirgan. Botdan qayta oling.');
+    }
+
+    try {
+      return verifySignedToken<UzcardAccessPayload>(
+        token,
+        config.PAYMENT_LINK_SECRET,
+      );
+    } catch (error) {
+      throw new BadRequestException('Obuna havolasi noto‘g‘ri yoki eskirgan.');
+    }
   }
 }
