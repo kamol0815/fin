@@ -1123,12 +1123,18 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
     try {
       await ctx.answerCallbackQuery({ url: targetUrl });
-      return;
     } catch (error) {
       logger.warn('Failed to open terms URL via callback', { error });
+      // If callback fails, show a simple notification instead of sending link to chat
+      try {
+        await ctx.answerCallbackQuery({
+          text: '⚠️ Havolani ochib bo\'lmadi. Iltimos, qayta urinib ko\'ring.',
+          show_alert: true,
+        } as any);
+      } catch (fallbackError) {
+        logger.error('Failed to show fallback notification', { fallbackError });
+      }
     }
-
-    await ctx.reply(targetUrl);
   }
 
   private async handleOpenUzcard(ctx: BotContext): Promise<void> {
