@@ -967,14 +967,29 @@ ${expirationLabel} ${subscriptionEndDate}`;
         logger.warn('Failed to acknowledge agreement callback', { error });
       }
 
+      // Get the selected service and plan
+      const selectedService = ctx.session.selectedService || 'yulduz';
+      const plan = await this.getPlanBySelectedName(selectedService);
+
+      if (!plan) {
+        await ctx.answerCallbackQuery({
+          text: "Obuna rejasi topilmadi. Iltimos, qayta urinib ko'ring.",
+          show_alert: true
+        } as any);
+        return;
+      }
+
+      // Construct the direct Uzcard URL
+      const uzcardUrl = `http://213.230.110.176:8989/api/uzcard-api/add-card?userId=${user._id}&planId=${plan._id}&selectedService=${selectedService}`;
+
       const keyboard = new InlineKeyboard()
-        .text('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', 'payment_type_subscription')
+        .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', uzcardUrl)
         .row()
         .text('🔙 Asosiy menyu', 'main_menu');
 
       const message =
-        '🎁 <b>Uzcard/Humo kartangizni bog\'lash uchun havola yuborildi!</b>\n\n' +
-        'Havola avtomatik ravishda ochilishi kerak. Agar ochilmasa, "🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)" tugmasini bosib qayta urinib ko\'rishingiz mumkin.';
+        '🎁 <b>Uzcard/Humo kartangizni bog\'lash uchun havola tayyor!</b>\n\n' +
+        'Quyidagi tugmani bosib to\'g\'ridan-to\'g\'ri Uzcard/Humo kartangizni bog\'lang va 30 kun bepul obuna oling!';
 
       await this.sendOrEditWithFallback(ctx, message, keyboard);
     } catch (error) {
@@ -984,13 +999,26 @@ ${expirationLabel} ${subscriptionEndDate}`;
     }
   }
 
-  private buildTermsMessage(ctx: BotContext) {
+  private async buildTermsMessage(ctx: BotContext) {
     const termsUrl = this.subscriptionTermsLink || "https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29";
+
+    // Get user and plan for direct URL
+    const telegramId = ctx.from?.id;
+    const user = await UserModel.findOne({ telegramId });
+    const selectedService = ctx.session.selectedService || 'yulduz';
+    const plan = await this.getPlanBySelectedName(selectedService);
 
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
-      .row()
-      .text('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', 'agree_terms');
+      .row();
+
+    // Add the Uzcard button - either as direct URL or callback
+    if (user && plan) {
+      const uzcardUrl = `http://213.230.110.176:8989/api/uzcard-api/add-card?userId=${user._id}&planId=${plan._id}&selectedService=${selectedService}`;
+      keyboard.url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', uzcardUrl);
+    } else {
+      keyboard.text('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', 'agree_terms');
+    }
 
     const message =
       '📜 <b>Foydalanish shartlari:</b>\n\n' +
@@ -1005,7 +1033,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     ctx: BotContext,
     options: { preferEdit?: boolean } = {},
   ): Promise<void> {
-    const { message, keyboard } = this.buildTermsMessage(ctx);
+    const { message, keyboard } = await this.buildTermsMessage(ctx);
 
     if (options.preferEdit && ctx.callbackQuery) {
       try {
