@@ -28,7 +28,9 @@ export const config = cleanEnv(process.env, {
   PAYMENT_LINK_BASE_URL: str({ default: '' }),
   SUBSCRIPTION_BASE_URL: str({ default: '' }),
   SUBSCRIPTION_MANAGEMENT_BASE_URL: str({ default: '' }),
-  SUBSCRIPTION_TERMS_URL: str({ default: 'https://surl.li/takrle' }),
+  SUBSCRIPTION_TERMS_URL: str({
+    default: 'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29',
+  }),
   API_PREFIX: str({ default: 'api' }),
   INTRO_STICKER_ID: str({ default: '' }),
 });

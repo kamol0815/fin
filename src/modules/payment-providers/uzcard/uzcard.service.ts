@@ -482,9 +482,8 @@ export class UzCardApiService {
     }
   }
 
-  async resendCode(session: string, token: string) {
+  async resendCode(session: string, userId: string) {
     try {
-      const { uid: userId } = this.decodeAccessToken(token);
       const payload = {
         session: session,
       };

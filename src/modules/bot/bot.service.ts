@@ -1105,20 +1105,15 @@ ${expirationLabel} ${subscriptionEndDate}`;
     await this.logInteraction(ctx, InteractionEventType.VIEW_TERMS);
 
     try {
-      await ctx.answerCallbackQuery();
+      await ctx.answerCallbackQuery({
+        url:
+          this.subscriptionTermsLink ||
+          'https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29',
+      });
+      return;
     } catch (error) {
-      logger.warn('Failed to acknowledge view terms callback', { error });
+      logger.warn('Failed to open terms URL via callback', { error });
     }
-
-    const keyboard = new InlineKeyboard().url(
-      '📄 Ofertani ochish',
-      this.subscriptionTermsLink,
-    );
-
-    await ctx.reply('📄 Ofertani ko‘rish uchun tugmani bosing:', {
-      reply_markup: keyboard,
-      disable_web_page_preview: true,
-    });
   }
 
   private async handleOpenUzcard(ctx: BotContext): Promise<void> {
