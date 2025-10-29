@@ -1001,7 +1001,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
       .row()
-      .text('✅ Obuna bo'lish', 'agree_terms');
+      .text("✅ Obuna bo'lish", 'agree_terms');
 
     const message =
       '📜 <b>Foydalanish shartlari va shartlar:</b>\n\n' +
