@@ -100,62 +100,107 @@ export class UzCardApiService {
           logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${dto.userId}`);
 
           try {
-            // Find and delete existing card from database
+            const lastFour = dto.cardNumber.slice(-4);
+
+            // Try to find existing card in our database regardless of deletion status
             const existingCard = await UserCardsModel.findOne({
               userId: dto.userId,
               cardType: CardType.UZCARD,
+            }).sort({ updatedAt: -1 });
+
+            if (existingCard) {
+              await UserCardsModel.deleteOne({ _id: existingCard._id });
+              logger.info(`Removed existing Uzcard entry from database for user ${dto.userId}`);
+
+              if (existingCard.UzcardIdForDeleteCard) {
+                const removed = await this.deleteUzcardCardFromProvider(
+                  existingCard.UzcardIdForDeleteCard,
+                  headers,
+                );
+                logger.info(
+                  removed
+                    ? 'Existing Uzcard card removed via stored delete id'
+                    : 'Stored delete id did not remove card from provider',
+                );
+              } else if (existingCard.cardToken) {
+                const removed = await this.deleteUzcardCardFromProvider(
+                  existingCard.cardToken,
+                  headers,
+                );
+                logger.info(
+                  removed
+                    ? 'Existing Uzcard card removed via stored card token'
+                    : 'Stored card token did not remove card from provider',
+                );
+              }
+            } else {
+              logger.warn(`No local Uzcard card found for user ${dto.userId}, attempting provider cleanup only`);
+            }
+
+            // Remove any soft-deleted Uzcard cards for the user to avoid duplicate leftovers
+            await UserCardsModel.deleteMany({
+              userId: dto.userId,
+              cardType: CardType.UZCARD,
+              isDeleted: true,
             });
 
-            if (existingCard && existingCard.UzcardIdForDeleteCard) {
-              logger.info(`Found existing card, attempting to delete from Uzcard API...`);
+            // Attempt fallback cleanup by scanning provider card list
+            const providerCards = await this.getUserCardList(dto.userId, headers);
+            if (providerCards.length) {
+              for (const card of providerCards) {
+                const providerCardNumber = card?.number || card?.cardNumber || '';
+                const providerCardId = card?.userCardId || card?.cardId || card?.id;
 
-              // Delete card from Uzcard API
-              try {
-                await axios.delete(
-                  `${this.baseUrl}/UserCard/deleteUserCard`,
-                  {
+                if (!providerCardId) {
+                  continue;
+                }
+
+                if (
+                  typeof providerCardNumber === 'string' &&
+                  providerCardNumber.slice(-4) === lastFour
+                ) {
+                  const removed = await this.deleteUzcardCardFromProvider(
+                    providerCardId,
                     headers,
-                    params: { userCardId: existingCard.UzcardIdForDeleteCard },
-                  },
-                );
-                logger.info(`Card deleted from Uzcard API successfully`);
-              } catch (deleteError) {
-                logger.warn(`Failed to delete card from Uzcard API, continuing anyway...`);
+                  );
+                  logger.info(
+                    removed
+                      ? `Removed Uzcard card ${providerCardId} from provider via list lookup`
+                      : `Failed to remove Uzcard card ${providerCardId} via list lookup`,
+                  );
+                }
               }
-
-              // Delete card from our database
-              await UserCardsModel.deleteOne({ _id: existingCard._id });
-              logger.info(`Card deleted from database successfully`);
-
-              // Wait a moment for Uzcard system to process
-              await new Promise(resolve => setTimeout(resolve, 1000));
-
-              // Try to add the card again
-              logger.info(`Attempting to re-add card...`);
-              const retryResponse = await axios.post(
-                `${this.baseUrl}/UserCard/createUserCard`,
-                payload,
-                { headers },
-              );
-
-              if (retryResponse.data.error) {
-                const retryErrorCode = retryResponse.data.error.errorCode?.toString() || 'unknown';
-                return {
-                  success: false,
-                  errorCode: retryErrorCode,
-                  message: retryResponse.data.error.errorMessage || this.getErrorMessage(retryErrorCode),
-                };
-              }
-
-              logger.info(`Card re-added successfully after deletion`);
-              return {
-                session: retryResponse.data.result.session,
-                otpSentPhone: retryResponse.data.result.otpSentPhone,
-                success: true,
-              };
-            } else {
-              logger.warn(`No existing card found in database, but Uzcard says card exists`);
             }
+
+            // Wait briefly for Uzcard system to process deletions
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+
+            // Try to add the card again
+            logger.info(`Attempting to re-add card after cleanup...`);
+            const retryResponse = await axios.post(
+              `${this.baseUrl}/UserCard/createUserCard`,
+              payload,
+              { headers },
+            );
+
+            if (retryResponse.data.error) {
+              const retryErrorCode = retryResponse.data.error.errorCode?.toString() || 'unknown';
+              logger.warn(`Retry add card failed with code ${retryErrorCode}`);
+              return {
+                success: false,
+                errorCode: retryErrorCode,
+                message:
+                  retryResponse.data.error.errorMessage ||
+                  this.getErrorMessage(retryErrorCode),
+              };
+            }
+
+            logger.info(`Card re-added successfully after cleanup`);
+            return {
+              session: retryResponse.data.result.session,
+              otpSentPhone: retryResponse.data.result.otpSentPhone,
+              success: true,
+            };
           } catch (cleanupError) {
             logger.error(`Error during card cleanup and retry: ${cleanupError}`);
           }
@@ -663,6 +708,104 @@ export class UzCardApiService {
       subscribedBy: CardType.UZCARD,
       paidAmount: plan.price, // Add the missing paidAmount field
     });
+  }
+
+  private async deleteUzcardCardFromProvider(
+    cardId: string,
+    headers: Record<string, string>,
+  ): Promise<boolean> {
+    if (!cardId) {
+      return false;
+    }
+
+    try {
+      const postResponse = await axios.post(
+        `${this.baseUrl}/UserCard/deleteUserCard`,
+        { userCardId: cardId },
+        { headers },
+      );
+
+      if (postResponse.data?.error) {
+        logger.warn('Uzcard deleteUserCard (POST) returned error', {
+          error: postResponse.data.error,
+        });
+      } else {
+        return postResponse.data?.result?.success !== false;
+      }
+    } catch (error) {
+      logger.debug('Uzcard deleteUserCard (POST) failed, attempting DELETE', {
+        message: (error as Error).message,
+      });
+    }
+
+    try {
+      const deleteResponse = await axios.delete(
+        `${this.baseUrl}/UserCard/deleteUserCard`,
+        {
+          headers,
+          params: { userCardId: cardId },
+        },
+      );
+
+      if (deleteResponse.data?.error) {
+        logger.warn('Uzcard deleteUserCard (DELETE) returned error', {
+          error: deleteResponse.data.error,
+        });
+        return false;
+      }
+
+      return deleteResponse.data?.result?.success !== false;
+    } catch (error) {
+      logger.warn('Failed to delete Uzcard card via DELETE', {
+        message: (error as Error).message,
+      });
+      return false;
+    }
+  }
+
+  private async getUserCardList(
+    userId: string,
+    headers: Record<string, string>,
+  ): Promise<any[]> {
+    if (!userId) {
+      return [];
+    }
+
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/UserCard/getUserCards`,
+        { userId },
+        { headers },
+      );
+
+      if (response.data?.error) {
+        logger.warn('Uzcard getUserCards returned error', {
+          error: response.data.error,
+        });
+        return [];
+      }
+
+      const result = response.data?.result;
+
+      if (Array.isArray(result)) {
+        return result;
+      }
+
+      if (Array.isArray(result?.cards)) {
+        return result.cards;
+      }
+
+      if (Array.isArray(response.data?.cards)) {
+        return response.data.cards;
+      }
+
+      return [];
+    } catch (error) {
+      logger.warn('Failed to fetch Uzcard card list', {
+        message: (error as Error).message,
+      });
+      return [];
+    }
   }
 
   private getHeaders() {
