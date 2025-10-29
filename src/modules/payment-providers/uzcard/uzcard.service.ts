@@ -207,16 +207,13 @@ export class UzCardApiService {
             } else {
               logger.warn(`No existing card found in database with deletion ID, but Uzcard says card exists. Card conflict detected.`);
 
-              // Since getUserCards API endpoint seems to not exist (404 error),
-              // we'll use a different approach: try to generate possible card IDs or 
-              // inform the user about the conflict
+              // Since the UzCard API deletion methods are returning 405 errors,
+              // it means the API doesn't support card deletion in the way we're trying.
+              // Let's try a simpler approach - just wait and retry a few times
+              // as sometimes the card conflict resolves itself.
 
-              // First, let's try advanced cleanup immediately
-              await this.tryAdvancedCardCleanup(dto.cardNumber, normalizedUserIdValue, headers);
-
-              // Wait for potential cleanup to take effect
-              logger.info(`Waiting 7 seconds after cleanup attempt before retry...`);
-              await new Promise((resolve) => setTimeout(resolve, 7000));
+              logger.info(`Attempting simple retry approach for card conflict...`);
+              await new Promise((resolve) => setTimeout(resolve, 3000));
 
               try {
                 const retryResponse = await axios.post(
@@ -237,13 +234,11 @@ export class UzCardApiService {
 
                   // If it's still error -108, we have a persistent card conflict
                   if (retryResponse.data.error.errorCode === -108) {
-                    logger.warn(`Persistent card conflict detected. This card may exist on UzCard servers but not in our database.`);
+                    logger.warn(`Persistent card conflict detected after first retry.`);
 
-                    // Try different potential card ID patterns that might work for deletion
-                    await this.tryAdvancedCardCleanup(dto.cardNumber, normalizedUserIdValue, headers);
-
-                    // One more final retry after advanced cleanup
-                    await new Promise((resolve) => setTimeout(resolve, 3000));
+                    // Try one more time with a longer wait - sometimes UzCard system needs more time
+                    logger.info(`Attempting final retry with longer wait period...`);
+                    await new Promise((resolve) => setTimeout(resolve, 8000));
 
                     try {
                       const finalRetry = await axios.post(
@@ -253,7 +248,7 @@ export class UzCardApiService {
                       );
 
                       if (!finalRetry.data.error) {
-                        logger.info(`Card added successfully after advanced cleanup`);
+                        logger.info(`Card added successfully after extended wait`);
                         return {
                           session: finalRetry.data.result.session,
                           otpSentPhone: finalRetry.data.result.otpSentPhone,
@@ -261,7 +256,7 @@ export class UzCardApiService {
                         };
                       }
                     } catch (finalRetryError) {
-                      logger.error(`Final retry failed: ${finalRetryError}`);
+                      logger.error(`Final retry failed after extended wait: ${finalRetryError?.message}`);
                     }
 
                     // Return a specific error that provides helpful guidance
@@ -815,7 +810,11 @@ export class UzCardApiService {
     userCardId: number | string,
     headers: Record<string, string>,
   ): Promise<boolean> {
+    // Based on error logs, UzCard API returns 405 (Method Not Allowed) for both POST and DELETE
+    // This suggests the API endpoint doesn't support card deletion, or uses a different endpoint/method
+
     try {
+      // Try POST first (most common for UzCard APIs)
       const response = await axios.post(
         `${this.baseUrl}/UserCard/deleteUserCard`,
         { userCardId },
@@ -823,17 +822,31 @@ export class UzCardApiService {
       );
 
       if (response.data?.error) {
-        logger.warn('Uzcard deleteUserCard returned error', {
+        logger.debug('Uzcard deleteUserCard POST returned error', {
           error: response.data.error,
+          userCardId,
         });
         return false;
       }
 
       const successFlag = response.data?.result?.success;
-      return successFlag !== false;
+      if (successFlag !== false) {
+        logger.info(`Successfully deleted card via POST: ${userCardId}`);
+        return true;
+      }
+
+      return false;
     } catch (postError) {
-      logger.warn('Failed to delete Uzcard card via POST, trying fallback', {
+      // Check if it's a 405 Method Not Allowed error
+      if (postError?.response?.status === 405) {
+        logger.debug(`UzCard API does not support POST for card deletion (405). Card ID: ${userCardId}`);
+        return false; // Don't try other methods if 405
+      }
+
+      logger.debug('Failed to delete Uzcard card via POST, trying DELETE', {
         error: postError?.message,
+        status: postError?.response?.status,
+        userCardId,
       });
 
       try {
@@ -846,18 +859,30 @@ export class UzCardApiService {
         );
 
         if (response.data?.error) {
-          logger.warn('Uzcard delete fallback returned error', {
+          logger.debug('Uzcard delete fallback returned error', {
             error: response.data.error,
+            userCardId,
           });
           return false;
         }
 
         const successFlag = response.data?.result?.success;
-        return successFlag !== false;
+        if (successFlag !== false) {
+          logger.info(`Successfully deleted card via DELETE: ${userCardId}`);
+          return true;
+        }
+
+        return false;
       } catch (deleteError) {
-        logger.error('Failed to delete Uzcard card via both POST and DELETE', {
-          error: deleteError?.message,
-        });
+        if (deleteError?.response?.status === 405) {
+          logger.debug(`UzCard API does not support DELETE for card deletion (405). Card ID: ${userCardId}`);
+        } else {
+          logger.debug('Failed to delete Uzcard card via DELETE', {
+            error: deleteError?.message,
+            status: deleteError?.response?.status,
+            userCardId,
+          });
+        }
         return false;
       }
     }
@@ -954,82 +979,48 @@ export class UzCardApiService {
       });
       return [];
     }
-  }
-
-  /**
+  }  /**
    * Try advanced card cleanup methods when standard approaches fail
+   * Note: Based on API responses, UzCard deletion endpoint returns 405 errors,
+   * so this method is kept minimal to avoid unnecessary API calls.
    */
   private async tryAdvancedCardCleanup(cardNumber: string, userId: string, headers: Record<string, string>): Promise<void> {
     try {
-      logger.info(`Attempting advanced card cleanup for cardNumber ending ${cardNumber.slice(-4)}, userId: ${userId}`);
+      logger.info(`Attempting simplified card cleanup for cardNumber ending ${cardNumber.slice(-4)}, userId: ${userId}`);
 
-      // Generate potential card IDs based on common patterns
+      // Only try the most likely card ID patterns since API deletion doesn't seem to work
       const last4Digits = cardNumber.slice(-4);
-      const cleanCardNumber = cardNumber.replace(/\s+/g, '');
 
       const potentialCardIds = [
-        // Try simple numeric patterns
-        parseInt(last4Digits),
-        parseInt(cleanCardNumber.slice(-6)), // Last 6 digits
-        parseInt(cleanCardNumber.slice(-8)), // Last 8 digits
-
-        // Try string patterns
-        `card_${last4Digits}`,
-        `${userId}_${last4Digits}`,
-        `uzcard_${last4Digits}`,
-
-        // Try card number variations
-        cardNumber, // Sometimes the full card number is used
-        cleanCardNumber, // Remove spaces
-        cleanCardNumber.substring(0, 16), // Standard card number length
-
-        // Try hashed or encoded patterns
-        last4Digits,
-        `${cleanCardNumber.slice(0, 4)}${last4Digits}`, // First 4 + last 4
-
-        // Try with user ID combinations
-        `${userId}_${cleanCardNumber.slice(-4)}`,
-        `${userId.slice(-6)}_${last4Digits}`,
+        // Most likely patterns based on typical UzCard implementations
+        parseInt(last4Digits), // Simple numeric ID
+        last4Digits, // String version
+        `${userId}_${last4Digits}`, // User + card combination
       ];
 
-      // Also try to find cards by telegramId if available
-      try {
-        const user = await UserModel.findById(userId).select('telegramId').exec();
-        if (user?.telegramId) {
-          const telegramIdStr = user.telegramId.toString();
-          potentialCardIds.push(
-            `${telegramIdStr.slice(-4)}_${last4Digits}`,
-            `tg_${telegramIdStr.slice(-4)}`,
-            parseInt(telegramIdStr.slice(-4)),
-            `telegram_${telegramIdStr}`
-          );
-        }
-      } catch (userError) {
-        logger.debug(`Could not fetch user for telegram-based cleanup: ${userError}`);
-      }
-
-      let successCount = 0;
+      let attemptCount = 0;
       for (const cardId of potentialCardIds) {
         try {
-          logger.info(`Trying to delete potential card ID: ${cardId}`);
+          logger.debug(`Trying to delete card ID: ${cardId}`);
           const deleted = await this.deleteUzcardCardFromProvider(cardId, headers);
+          attemptCount++;
+
           if (deleted) {
             logger.info(`Successfully deleted card with ID: ${cardId}`);
-            successCount++;
-            // Don't return early, try to delete all possible matches
-            await new Promise((resolve) => setTimeout(resolve, 500)); // Small delay between deletions
+            return; // Exit early if successful
+          }
+
+          // Small delay between attempts
+          if (attemptCount < potentialCardIds.length) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         } catch (deleteError) {
-          logger.debug(`Failed to delete card ID ${cardId}: ${deleteError}`);
+          logger.debug(`Delete attempt failed for card ID ${cardId}: ${deleteError?.message}`);
           // Continue with next ID
         }
       }
 
-      if (successCount > 0) {
-        logger.info(`Advanced card cleanup completed successfully. Deleted ${successCount} card(s).`);
-      } else {
-        logger.warn(`Advanced card cleanup completed but no cards were successfully deleted`);
-      }
+      logger.info(`Card cleanup completed. Tried ${attemptCount} different card ID patterns.`);
     } catch (error) {
       logger.error(`Error in tryAdvancedCardCleanup: ${error}`);
     }
