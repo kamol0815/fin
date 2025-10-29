@@ -67,23 +67,13 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private subscriptionChecker: SubscriptionChecker;
   private readonly ADMIN_IDS = [1487957834, 7554617589, 85939027, 2022496528];
   private readonly subscriptionTermsLink: string;
+  private readonly planCache = new Map<string, { plan: IPlanDocument; expires: number }>();
+  private readonly PLAN_CACHE_TTL_MS = 5 * 60 * 1000;
   private readonly introSlides: IntroSlide[] = [
     {
       type: 'video',
       filePath: join(process.cwd(), 'qiz.mp4'),
-      caption: (ctx) => {
-        const name = ctx.from?.first_name ?? "do'st";
-        return (
-          `🌟 Assalomu alaykum, ${name}! 👋\n\n` +
-          `🔮 <b>Munajjim Premium</b>ga xush kelibsiz!\n\n` +
-          `✨ Bu yerda sizni kutayotgan imkoniyatlar:\n` +
-          `• 🎯 Shaxsiy astro-bashoratlar\n` +
-          `• 🌙 Kunlik horoskop va tavsiyalar\n` +
-          `• ⭐ Premium fal va interpretatsiyalar\n` +
-          `• 🔥 30 kunlik BEPUL sinov davri\n\n` +
-          `📱 Davom etish uchun pastdagi tugmani bosing!`
-        );
-      },
+      caption: () => '',
     },
   ];
 
@@ -316,7 +306,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     console.log('WATCH! @@@ handlePaymentSuccess is being called! ');
 
     try {
-      const plan = await Plan.findOne({ name: 'Basic' });
+      const plan = await this.getPlanByName('Basic');
 
       if (!plan) {
         logger.error('No plan found with name "Basic"');
@@ -461,7 +451,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     logger.info(`Selected service on handlePaymentSuccess: ${selectedService}`);
     try {
-      const plan = await Plan.findOne({ selectedName: selectedService });
+      const plan = await this.getPlanBySelectedName(selectedService);
 
       if (!plan) {
         return;
@@ -722,7 +712,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     try {
       if (slide.type === 'video') {
         await ctx.replyWithVideo(new InputFile(slide.filePath), {
-          caption: slide.caption(ctx),
+          caption: '',
           parse_mode: 'HTML',
         });
       } else {
@@ -732,7 +722,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       }
 
       await this.sendIntroSticker(ctx);
-      await this.handleIntroDone(ctx);
+
+      const keyboard = this.buildIntroKeyboard();
+      await ctx.reply(
+        "🎁 Bepul 30 kunlik obunani faollashtirish uchun pastdagi tugmani bosing",
+        {
+          reply_markup: keyboard,
+        },
+      );
     } catch (error) {
       logger.error('Failed to deliver intro content', {
         userId: ctx.from?.id,
@@ -745,7 +742,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private buildIntroKeyboard(_: number): InlineKeyboard {
+  private buildIntroKeyboard(): InlineKeyboard {
     return new InlineKeyboard().text('🎁 BEPUL 30 kunlik obuna', 'intro_done');
   }
 
@@ -1026,6 +1023,57 @@ ${expirationLabel} ${subscriptionEndDate}`;
     ctx.session.mainMenuMessageId = sent.message_id;
   }
 
+  private getPlanFromCache(key: string): IPlanDocument | null {
+    const entry = this.planCache.get(key);
+    if (!entry) {
+      return null;
+    }
+
+    if (entry.expires < Date.now()) {
+      this.planCache.delete(key);
+      return null;
+    }
+
+    return entry.plan;
+  }
+
+  private storePlanInCache(key: string, plan: IPlanDocument): void {
+    this.planCache.set(key, {
+      plan,
+      expires: Date.now() + this.PLAN_CACHE_TTL_MS,
+    });
+  }
+
+  private async getPlanBySelectedName(
+    selectedName: string,
+  ): Promise<IPlanDocument | null> {
+    const cacheKey = `selected:${selectedName}`;
+    const cached = this.getPlanFromCache(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const plan = await Plan.findOne({ selectedName }).exec();
+    if (plan) {
+      this.storePlanInCache(cacheKey, plan);
+    }
+    return plan;
+  }
+
+  private async getPlanByName(name: string): Promise<IPlanDocument | null> {
+    const cacheKey = `name:${name}`;
+    const cached = this.getPlanFromCache(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const plan = await Plan.findOne({ name }).exec();
+    if (plan) {
+      this.storePlanInCache(cacheKey, plan);
+    }
+    return plan;
+  }
+
   private async sendOrEditWithFallback(
     ctx: BotContext,
     message: string,
@@ -1058,10 +1106,8 @@ ${expirationLabel} ${subscriptionEndDate}`;
       await ctx.answerCallbackQuery({ url: this.subscriptionTermsLink });
       return;
     } catch (error) {
-      logger.warn('Failed to acknowledge view terms callback', { error });
+      logger.warn('Failed to open terms URL via callback', { error });
     }
-
-    await ctx.reply(this.subscriptionTermsLink);
   }
 
   private async handleOpenUzcard(ctx: BotContext): Promise<void> {
@@ -1107,7 +1153,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     selectedService: string,
   ): Promise<string | undefined> {
     try {
-      const plan = await Plan.findOne({ selectedName: selectedService }).exec();
+      const plan = await this.getPlanBySelectedName(selectedService);
 
       if (!plan) {
         logger.warn('Plan not found while generating subscription URL', {
@@ -1153,9 +1199,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
         return;
       }
 
-      const plan = await Plan.findOne({
-        name: 'Basic',
-      });
+      const plan = await this.getPlanByName('Basic');
 
       if (!plan) {
         logger.error('No plan found with name "Basic"');
@@ -1404,7 +1448,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
       const selectedService = await this.selectedServiceChecker(ctx);
 
-      const plan = await Plan.findOne({ selectedName: selectedService });
+      const plan = await this.getPlanBySelectedName(selectedService);
       if (!plan) {
         logger.error(`No plan found with selectedService: ${selectedService}`);
         await ctx.answerCallbackQuery(
@@ -1504,7 +1548,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
   ) {
     const selectedService = await this.selectedServiceChecker(ctx);
 
-    const plan = await Plan.findOne({ selectedName: selectedService });
+    const plan = await this.getPlanBySelectedName(selectedService);
 
     if (!plan) {
       await ctx.answerCallbackQuery({
@@ -1629,7 +1673,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
     }
 
     if (!plan) {
-      plan = await Plan.findOne({ selectedName: selectedService }).exec();
+      plan = await this.getPlanBySelectedName(selectedService);
       if (!plan) {
         await ctx.answerCallbackQuery(
           "To'lov rejasi topilmadi. Iltimos, administrator bilan bog'laning.",
@@ -2005,9 +2049,7 @@ ${expirationLabel} ${subscriptionEndDate}`;
         return;
       }
 
-      const plan = await Plan.findOne({
-        name: 'Basic',
-      });
+      const plan = await this.getPlanByName('Basic');
 
       if (!plan) {
         logger.error('No plan found with name "Basic"');
