@@ -721,7 +721,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         });
       }
 
-      await this.sendIntroSticker(ctx);
+      void this.sendIntroSticker(ctx);
 
       const keyboard = this.buildIntroKeyboard();
       await ctx.reply(
@@ -1103,11 +1103,20 @@ ${expirationLabel} ${subscriptionEndDate}`;
     await this.logInteraction(ctx, InteractionEventType.VIEW_TERMS);
 
     try {
-      await ctx.answerCallbackQuery({ url: this.subscriptionTermsLink });
-      return;
+      await ctx.answerCallbackQuery();
     } catch (error) {
-      logger.warn('Failed to open terms URL via callback', { error });
+      logger.warn('Failed to acknowledge view terms callback', { error });
     }
+
+    const keyboard = new InlineKeyboard().url(
+      '📄 Ofertani ochish',
+      this.subscriptionTermsLink,
+    );
+
+    await ctx.reply('📄 Ofertani ko‘rish uchun tugmani bosing:', {
+      reply_markup: keyboard,
+      disable_web_page_preview: true,
+    });
   }
 
   private async handleOpenUzcard(ctx: BotContext): Promise<void> {
