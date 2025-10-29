@@ -12,9 +12,9 @@ import { AddCardDto } from './dto/add-card.dto';
 import { AddCardResponseDto } from './dto/response/add-card-response.dto';
 import { ConfirmCardDto } from './dto/request/confirm-card.dto';
 import { ErrorResponse, UzCardApiService } from './uzcard.service';
-import { verifySignedToken } from '../../shared/utils/signed-token.util';
-import { config } from '../../shared/config';
-import { Plan } from '../../shared/database/models/plans.model';
+import { verifySignedToken } from '../../../shared/utils/signed-token.util';
+import { config } from '../../../shared/config';
+import { Plan } from '../../../shared/database/models/plans.model';
 
 @Controller('uzcard-api')
 export class UzCardApiController {
