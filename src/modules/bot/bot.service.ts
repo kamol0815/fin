@@ -102,7 +102,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       : undefined;
 
     if (link) {
-      return `Obunani bekor qilish uchun <a href="${link}">bu havola</a> orqali ariza yuboring.`;
+      return `Obunani <a href="${link}">bu havola</a> orqali bekor qilishingiz mumkin.`;
     }
 
     return 'Obunani bekor qilish uchun botdagi "Obuna holati" bo‘limi orqali qo‘llab-quvvatlashga murojaat qiling.';
@@ -984,13 +984,13 @@ ${expirationLabel} ${subscriptionEndDate}`;
         }
 
         const keyboard = new InlineKeyboard()
-          .url('🎁 Obuna bolish Uzcard/Humo (30 kun bepul)', subscriptionUrl)
+          .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', subscriptionUrl)
           .row()
           .text('🔙 Asosiy menyu', 'main_menu');
 
         const message =
           '🎁 <b>Uzcard/Humo kartangizni bog\'lash uchun havola yuborildi.</b>\n\n' +
-          'Havola avtomatik ravishda ochilishi kerak. Agar ochilmasa, "🎁 Uzcard/Humo (30 kun bepul)" tugmasini bosib qayta urinib ko\'rishingiz mumkin.';
+          'Havola avtomatik ravishda ochilishi kerak. Agar ochilmasa, "🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)" tugmasini bosib qayta urinib ko\'rishingiz mumkin.';
 
         await this.sendOrEditWithFallback(ctx, message, keyboard);
         return;
@@ -1013,13 +1013,13 @@ ${expirationLabel} ${subscriptionEndDate}`;
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
       .row()
-      .url('🎁 Obuna bolish Uzcard/Humo (30 kun bepul)', subscriptionStaticUrl);
+      .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', subscriptionStaticUrl);
 
     const message =
       '📜 <b>Foydalanish shartlari:</b>\n\n' +
       "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
       `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
-      'Foydalanish shartlari tugmasini bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Obuna bo\'lish Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
+      'Foydalanish shartlari tugmasini bosib ommaviy ofertetani o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Obuna bo\'lish ✅ Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
 
     return { message, keyboard };
   }
