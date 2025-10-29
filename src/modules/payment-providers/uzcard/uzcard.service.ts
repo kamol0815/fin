@@ -211,9 +211,12 @@ export class UzCardApiService {
               // we'll use a different approach: try to generate possible card IDs or 
               // inform the user about the conflict
 
-              // First, let's try a simple retry after waiting - sometimes the card gets cleared automatically
-              logger.info(`Waiting 5 seconds before retry attempt...`);
-              await new Promise((resolve) => setTimeout(resolve, 5000));
+              // First, let's try advanced cleanup immediately
+              await this.tryAdvancedCardCleanup(dto.cardNumber, normalizedUserIdValue, headers);
+
+              // Wait for potential cleanup to take effect
+              logger.info(`Waiting 7 seconds after cleanup attempt before retry...`);
+              await new Promise((resolve) => setTimeout(resolve, 7000));
 
               try {
                 const retryResponse = await axios.post(
@@ -265,7 +268,7 @@ export class UzCardApiService {
                     return {
                       success: false,
                       errorCode: '-108',
-                      message: 'Bu karta UzCard tizimida mavjud. Iltimos, boshqa karta qo\'shing yoki @munajjimbot_admin bilan bog\'laning.',
+                      message: 'Bu karta allaqachon tizimda ro\'yxatdan o\'tgan. Iltimos, boshqa karta qo\'shing yoki bir necha daqiqa kutib qaytadan urinib ko\'ring. Muammo davom etsa @munajjimbot_admin bilan bog\'laning.',
                     };
                   }
                 }
@@ -866,7 +869,7 @@ export class UzCardApiService {
       '-101': `Karta malumotlari noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
       '-103': `Amal qilish muddati noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
       '-104': 'Karta aktive emas. Bankga murojaat qiling.',
-      '-108': `Bu karta allaqachon tizimda mavjud. Iltimos qaytadan urinib ko'ring.`,
+      '-108': `Bu karta allaqachon ro'yxatdan o'tgan. Iltimos, boshqa karta ishlating yoki bir oz kutib qaytadan urinib ko'ring.`,
 
       // sms errors
       '-113': `Tasdiqlash kodi muddati o'tgan. Qayta yuborish tugmasidan foydalaning.`,
@@ -962,25 +965,59 @@ export class UzCardApiService {
 
       // Generate potential card IDs based on common patterns
       const last4Digits = cardNumber.slice(-4);
+      const cleanCardNumber = cardNumber.replace(/\s+/g, '');
+
       const potentialCardIds = [
         // Try simple numeric patterns
         parseInt(last4Digits),
+        parseInt(cleanCardNumber.slice(-6)), // Last 6 digits
+        parseInt(cleanCardNumber.slice(-8)), // Last 8 digits
+
+        // Try string patterns
         `card_${last4Digits}`,
         `${userId}_${last4Digits}`,
-        // Try with timestamp patterns (common in many systems)
-        `${Date.now()}_${last4Digits}`.substring(0, 20),
-        // Try hash-like patterns
+        `uzcard_${last4Digits}`,
+
+        // Try card number variations
         cardNumber, // Sometimes the full card number is used
-        cardNumber.replace(/\s+/g, ''), // Remove spaces
+        cleanCardNumber, // Remove spaces
+        cleanCardNumber.substring(0, 16), // Standard card number length
+
+        // Try hashed or encoded patterns
+        last4Digits,
+        `${cleanCardNumber.slice(0, 4)}${last4Digits}`, // First 4 + last 4
+
+        // Try with user ID combinations
+        `${userId}_${cleanCardNumber.slice(-4)}`,
+        `${userId.slice(-6)}_${last4Digits}`,
       ];
 
+      // Also try to find cards by telegramId if available
+      try {
+        const user = await UserModel.findById(userId).select('telegramId').exec();
+        if (user?.telegramId) {
+          const telegramIdStr = user.telegramId.toString();
+          potentialCardIds.push(
+            `${telegramIdStr.slice(-4)}_${last4Digits}`,
+            `tg_${telegramIdStr.slice(-4)}`,
+            parseInt(telegramIdStr.slice(-4)),
+            `telegram_${telegramIdStr}`
+          );
+        }
+      } catch (userError) {
+        logger.debug(`Could not fetch user for telegram-based cleanup: ${userError}`);
+      }
+
+      let successCount = 0;
       for (const cardId of potentialCardIds) {
         try {
           logger.info(`Trying to delete potential card ID: ${cardId}`);
           const deleted = await this.deleteUzcardCardFromProvider(cardId, headers);
           if (deleted) {
             logger.info(`Successfully deleted card with ID: ${cardId}`);
-            return; // Exit early if successful
+            successCount++;
+            // Don't return early, try to delete all possible matches
+            await new Promise((resolve) => setTimeout(resolve, 500)); // Small delay between deletions
           }
         } catch (deleteError) {
           logger.debug(`Failed to delete card ID ${cardId}: ${deleteError}`);
@@ -988,7 +1025,11 @@ export class UzCardApiService {
         }
       }
 
-      logger.warn(`Advanced card cleanup completed but no cards were successfully deleted`);
+      if (successCount > 0) {
+        logger.info(`Advanced card cleanup completed successfully. Deleted ${successCount} card(s).`);
+      } else {
+        logger.warn(`Advanced card cleanup completed but no cards were successfully deleted`);
+      }
     } catch (error) {
       logger.error(`Error in tryAdvancedCardCleanup: ${error}`);
     }
