@@ -50,14 +50,14 @@ type BotContext = Context & SessionFlavor<SessionData>;
 
 type IntroSlide =
   | {
-      type: 'video';
-      filePath: string;
-      caption: (ctx: BotContext) => string;
-    }
+    type: 'video';
+    filePath: string;
+    caption: (ctx: BotContext) => string;
+  }
   | {
-      type: 'message';
-      text: (ctx: BotContext) => string;
-    };
+    type: 'message';
+    text: (ctx: BotContext) => string;
+  };
 
 @Injectable()
 export class BotService implements OnModuleInit, OnModuleDestroy {
@@ -70,10 +70,19 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private readonly introSlides: IntroSlide[] = [
     {
       type: 'video',
-      filePath: join(process.cwd(), 'qiz.mp4'),
+      filePath: join(process.cwd(), 'qiz.mp4'), // Main intro video
       caption: (ctx) => {
         const name = ctx.from?.first_name ?? "do'st";
-        return `Assalomu alaykum, ${name}! 👋`;
+        return (
+          `🌟 Assalomu alaykum, ${name}! 👋\n\n` +
+          `🔮 <b>Munajjim Premium</b> ga xush kelibsiz!\n\n` +
+          `✨ Bu yerda sizni kutayotgan imkoniyatlar:\n` +
+          `• 🎯 Shaxsiy astro-bashoratlar\n` +
+          `• 🌙 Kunlik horoskop va tavsiyalar\n` +
+          `• ⭐ Premium fal va interpretatsiyalar\n` +
+          `• 🔥 30 kunlik BEPUL sinov davri\n\n` +
+          `📱 Davom etish uchun pastdagi tugmani bosing!`
+        );
       },
     },
   ];
@@ -722,12 +731,48 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     try {
       if (slide.type === 'video') {
-        await ctx.replyWithVideo(new InputFile(slide.filePath), {
+        // Log video sending attempt
+        logger.info(`Sending intro video to user: ${ctx.from?.id}`, {
+          userId: ctx.from?.id,
+          videoPath: slide.filePath,
+          step: step
+        });
+
+        // Check if video file exists before sending
+        const fs = await import('fs');
+        if (!fs.existsSync(slide.filePath)) {
+          logger.error(`Video file not found: ${slide.filePath}`);
+          throw new Error(`Video file not found: ${slide.filePath}`);
+        }
+
+        // Send "uploading video" action
+        await ctx.replyWithChatAction('upload_video');
+
+        // Send the video with enhanced error handling
+        const videoMessage = await ctx.replyWithVideo(new InputFile(slide.filePath), {
           caption: slide.caption(ctx),
           parse_mode: 'HTML',
           reply_markup: keyboard,
+          width: 854,
+          height: 480,
+          duration: 50, // Actual video duration
+          supports_streaming: true,
         });
+
+        logger.info(`Intro video sent successfully to user: ${ctx.from?.id}`, {
+          messageId: videoMessage.message_id,
+          userId: ctx.from?.id
+        });
+
+        // Send intro sticker after successful video delivery
         await this.sendIntroSticker(ctx);
+
+        // Log interaction
+        await this.logInteraction(ctx, InteractionEventType.VIEW_INTRO_VIDEO, {
+          step: step,
+          videoPath: slide.filePath
+        });
+
       } else {
         await ctx.reply(slide.text(ctx), {
           parse_mode: 'HTML',
@@ -737,15 +782,48 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       logger.error('Failed to deliver intro slide', {
         step,
-        error,
+        userId: ctx.from?.id,
+        videoPath: slide.filePath,
+        error: error.message,
+        stack: error.stack
       });
 
-      await ctx.reply(
-        "⚠️ Video yuborishda xatolik yuz berdi. Iltimos, /start buyrug'ini qayta yuboring.",
-      );
-      ctx.session.introActive = false;
-      ctx.session.introStep = undefined;
-      await this.showMainMenu(ctx);
+      // Try fallback approach - send text message instead
+      try {
+        const fallbackMessage = (
+          `🌟 Assalomu alaykum, ${ctx.from?.first_name ?? "do'st"}! 👋\n\n` +
+          `🔮 <b>Munajjim Premium</b> ga xush kelibsiz!\n\n` +
+          `✨ Bu yerda sizni kutayotgan imkoniyatlar:\n` +
+          `• 🎯 Shaxsiy astro-bashoratlar\n` +
+          `• 🌙 Kunlik horoskop va tavsiyalar\n` +
+          `• ⭐ Premium fal va interpretatsiyalar\n` +
+          `• 🔥 30 kunlik BEPUL sinov davri\n\n` +
+          `📱 Davom etish uchun pastdagi tugmani bosing!\n\n` +
+          `⚠️ <i>Video yuklanmadi, lekin barcha funksiyalar ishlaydi!</i>`
+        );
+
+        await ctx.reply(fallbackMessage, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+
+        logger.info(`Fallback intro message sent to user: ${ctx.from?.id}`);
+
+        // Send intro sticker as backup
+        await this.sendIntroSticker(ctx);
+
+      } catch (fallbackError) {
+        logger.error('Fallback intro message also failed', {
+          userId: ctx.from?.id,
+          error: fallbackError.message
+        });
+
+        // Last resort - simple message
+        await ctx.reply(
+          "🔮 Munajjim Premium ga xush kelibsiz! Davom etish uchun tugmani bosing.",
+          { reply_markup: keyboard }
+        );
+      }
     }
   }
 

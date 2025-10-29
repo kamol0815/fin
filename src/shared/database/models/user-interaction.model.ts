@@ -2,6 +2,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 export enum InteractionEventType {
   INTRO_MENU = 'intro_menu',
+  VIEW_INTRO_VIDEO = 'view_intro_video',
   VIEW_TERMS = 'view_terms',
   ACCEPT_TERMS = 'accept_terms',
   OPEN_UZCARD = 'open_uzcard',
