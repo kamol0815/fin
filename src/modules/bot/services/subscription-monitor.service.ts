@@ -5,6 +5,8 @@ import {
   UserModel,
 } from '../../../shared/database/models/user.model';
 import logger from '../../../shared/utils/logger';
+import { CardType, UserCardsModel } from '../../../shared/database/models/user-cards.model';
+import { UzCardApiService } from '../../payment-providers/uzcard/uzcard.service';
 
 interface SessionData {
   pendingSubscription?: {
@@ -21,6 +23,12 @@ export class SubscriptionMonitorService {
     this.bot = bot;
   }
 
+  private getUzCardService(): UzCardApiService {
+    // Lazy initialization to avoid circular dependency
+    const { BotService } = require('../../bot/bot.service');
+    return new UzCardApiService(new BotService());
+  }
+
   async checkExpiringSubscriptions(): Promise<void> {
     const threeDaysFromNow = new Date();
     threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
@@ -35,7 +43,17 @@ export class SubscriptionMonitorService {
     });
 
     for (const user of expiringUsers) {
-      await this.sendExpirationWarning(user);
+      // Try automatic renewal first for subscription users
+      if (user.subscriptionType === 'subscription') {
+        const renewed = await this.attemptAutoRenewal(user);
+        if (!renewed) {
+          // Only send warning if auto-renewal failed
+          await this.sendExpirationWarning(user);
+        }
+      } else {
+        // For one-time payment users, just send warning
+        await this.sendExpirationWarning(user);
+      }
     }
   }
 
@@ -58,7 +76,7 @@ export class SubscriptionMonitorService {
     try {
       const daysLeft = Math.ceil(
         (user.subscriptionEnd.getTime() - new Date().getTime()) /
-          (1000 * 60 * 60 * 24),
+        (1000 * 60 * 60 * 24),
       );
 
       const keyboard = new InlineKeyboard()
@@ -82,6 +100,96 @@ export class SubscriptionMonitorService {
         `Error sending expiration warning to user ${user.telegramId}:`,
         error,
       );
+    }
+  }
+
+  private async attemptAutoRenewal(user: IUserDocument): Promise<boolean> {
+    try {
+      logger.info(`Attempting auto-renewal for user ${user.telegramId}`);
+
+      // Check if user has a saved card
+      const savedCard = await UserCardsModel.findOne({
+        userId: user._id,
+        verified: true,
+        cardType: CardType.UZCARD,
+      });
+
+      if (!savedCard) {
+        logger.info(`No saved card found for user ${user.telegramId}`);
+        return false;
+      }
+
+      // Get user's plan
+      const planId = savedCard.planId?.toString();
+      if (!planId) {
+        logger.warn(`No plan ID found for user ${user.telegramId}`);
+        return false;
+      }
+
+      // Attempt payment
+      const uzCardService = this.getUzCardService();
+      const paymentResult = await uzCardService.performPayment(
+        user.telegramId,
+        planId,
+      );
+
+      if (paymentResult.success) {
+        logger.info(`Auto-renewal successful for user ${user.telegramId}`);
+
+        // Update user subscription
+        const newEndDate = new Date();
+        newEndDate.setDate(newEndDate.getDate() + 30);
+
+        user.subscriptionEnd = newEndDate;
+        user.isActive = true;
+        await user.save();
+
+        // Send success message to user
+        const keyboard = new InlineKeyboard()
+          .text('📊 Obuna holati', 'check_status')
+          .row()
+          .text('🏠 Asosiy menyu', 'main_menu');
+
+        const message =
+          `✅ Obunangiz muvaffaqiyatli yangilandi!\n\n` +
+          `📆 Yangi tugash sanasi: ${newEndDate
+            .getDate()
+            .toString()
+            .padStart(2, '0')}.${(newEndDate.getMonth() + 1)
+              .toString()
+              .padStart(2, '0')}.${newEndDate.getFullYear()}\n\n` +
+          `To'lov saqlangan kartangizdan avtomatik amalga oshirildi.`;
+
+        await this.bot.api.sendMessage(user.telegramId, message, {
+          reply_markup: keyboard,
+        });
+
+        return true;
+      } else {
+        logger.warn(
+          `Auto-renewal failed for user ${user.telegramId}: ${paymentResult.message}`,
+        );
+
+        // Send payment failure notification
+        const keyboard = new InlineKeyboard()
+          .text('🔄 Obunani yangilash', 'subscribe')
+          .row()
+          .text('📊 Obuna holati', 'check_status');
+
+        const message =
+          `⚠️ Obunangizni avtomatik yangilashda xatolik yuz berdi.\n\n` +
+          `Sabab: ${paymentResult.message || 'Kartada yetarli mablag\' mavjud emas yoki kartada muammo bor.'}\n\n` +
+          `Iltimos, obunangizni qo'lda yangilang yoki kartangizni tekshiring.`;
+
+        await this.bot.api.sendMessage(user.telegramId, message, {
+          reply_markup: keyboard,
+        });
+
+        return false;
+      }
+    } catch (error) {
+      logger.error(`Error in auto-renewal for user ${user.telegramId}:`, error);
+      return false;
     }
   }
 
