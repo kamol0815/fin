@@ -1,4 +1,16 @@
-export function  uzcardAuthHash() {
+import { createHash } from 'crypto';
+
+export function uzcardAuthHash(timestamp?: number) {
+  if (timestamp) {
+    const secretKey = process.env.UZCARD_SECRET_KEY;
+    if (!secretKey) {
+      throw new Error('UZCARD_SECRET_KEY must be defined in environment variables');
+    }
+    const data = `${timestamp}${secretKey}`;
+    const signature = createHash('sha256').update(data).digest('hex');
+    return { signature };
+  }
+
   const login = process.env.UZCARD_LOGIN;
   const password = process.env.UZCARD_PASSWORD;
 
