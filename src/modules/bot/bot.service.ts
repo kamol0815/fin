@@ -969,9 +969,18 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
       if (subscriptionUrl) {
         try {
-          await ctx.answerCallbackQuery();
+          await ctx.answerCallbackQuery({ url: subscriptionUrl });
         } catch (error) {
-          logger.warn('Failed to answer agreement callback', { error });
+          logger.warn('Failed to open subscription link via callback', {
+            error,
+          });
+          try {
+            await ctx.answerCallbackQuery();
+          } catch (fallbackError) {
+            logger.warn('Failed to acknowledge agreement callback', {
+              error: fallbackError,
+            });
+          }
         }
 
         const keyboard = new InlineKeyboard()
@@ -980,8 +989,8 @@ ${expirationLabel} ${subscriptionEndDate}`;
           .text('🔙 Asosiy menyu', 'main_menu');
 
         const message =
-          '🎁 <b>Uzcard/Humo kartangizni kiriting va 30 kunlik bepul obunani faollashtiring!</b>\n\n' +
-          'Quyidagi tugmani bosing, kartani birlashtiring va darhol premium olamiga qo‘shiling.';
+          '🎁 <b>Uzcard/Humo kartangizni bog\'lash uchun havola yuborildi.</b>\n\n' +
+          'Havola avtomatik ravishda ochilishi kerak. Agar ochilmasa, "🎁 Uzcard/Humo (30 kun bepul)" tugmasini bosib qayta urinib ko\'rishingiz mumkin.';
 
         await this.sendOrEditWithFallback(ctx, message, keyboard);
         return;
@@ -997,17 +1006,19 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
   private buildTermsMessage(ctx: BotContext) {
     const termsUrl = this.subscriptionTermsLink || "https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29";
+    const subscriptionStaticUrl =
+      'http://213.230.110.176:8989/api/payment-link/uzcard?token=eyJ1aWQiOiI2OTAxYzBhYWVlYzdjNjc5ZWVmNjFhMmIiLCJwaWQiOiI2OTAxYzBhNmVlYzdjNjc5ZWVmNjFhMTAiLCJzdmMiOiJ5dWxkdXoifQ.NaSUk3aNE--jH0uGRYZxs5pONMf0hyBelmvKFzHWTxM';
 
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
       .row()
-      .text("✅ Obuna bo'lish", 'agree_terms');
+      .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionStaticUrl);
 
     const message =
       '📜 <b>Foydalanish shartlari va shartlar:</b>\n\n' +
       "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
       `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
-      'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "Obuna bo‘lish" tugmasini bosing.';
+      'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
 
     return { message, keyboard };
   }
