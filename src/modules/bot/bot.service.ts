@@ -75,8 +75,6 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private readonly subscriptionTermsLink: string;
   private readonly planCache = new Map<string, { plan: IPlanDocument; expires: number }>();
   private readonly PLAN_CACHE_TTL_MS = 5 * 60 * 1000;
-  private readonly STATIC_UZCARD_LINK =
-    'http://213.230.110.176:8989/api/payment-link/uzcard?token=eyJ1aWQiOiI2OTAyNDAyNmI2ZWI3NmJlNDM2OTI4ZmMiLCJwaWQiOiI2OTAyMDMxZWY5NmYxZDlmOGM0MTNkNDIiLCJzdmMiOiJ5dWxkdXoifQ.--Zfzjye8vyyZcdnOa9H8HYRsJM7tkIigFTD3tmaOqU';
   private readonly introSlides: IntroSlide[] = [
     {
       type: 'video',
@@ -950,8 +948,8 @@ ${expirationLabel} ${subscriptionEndDate}`;
   private async handleAgreement(ctx: BotContext): Promise<void> {
     try {
       const telegramId = ctx.from?.id;
-      const user = await UserModel.findOne({ telegramId });
-      if (!user) {
+      const existingUser = await UserModel.findOne({ telegramId });
+      if (!existingUser) {
         await ctx.answerCallbackQuery(
           "Foydalanuvchi ID'sini olishda xatolik yuz berdi.",
         );
@@ -968,10 +966,23 @@ ${expirationLabel} ${subscriptionEndDate}`;
       }
 
       const selectedService = ctx.session.selectedService || 'yulduz';
-      ctx.session.pendingSubscriptionUrl = this.STATIC_UZCARD_LINK;
+
+      const subscriptionUrl = await this.generateSubscriptionUrl(
+        existingUser._id.toString(),
+        selectedService,
+      );
+
+      if (!subscriptionUrl) {
+        await ctx.reply(
+          '❌ Obuna havolasini yaratib bo\'lmadi. Iltimos, keyinroq qayta urinib ko\'ring.'
+        );
+        return;
+      }
+
+      ctx.session.pendingSubscriptionUrl = subscriptionUrl;
 
       const keyboard = new InlineKeyboard()
-        .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', this.STATIC_UZCARD_LINK)
+        .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', subscriptionUrl)
         .row()
         .text('🔙 Asosiy menyu', 'main_menu');
 
@@ -993,13 +1004,13 @@ ${expirationLabel} ${subscriptionEndDate}`;
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
       .row()
-      .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', this.STATIC_UZCARD_LINK);
+      .text('✅ Shartlarni qabul qilaman', 'i_agree');
 
     const message =
       '📜 <b>Foydalanish shartlari:</b>\n\n' +
       "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
       `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
-      'Foydalanish shartlari tugmasini bosib ommaviy ofertetani o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Obuna bo\'lish ✅ Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
+      'Foydalanish shartlari tugmasini bosib ommaviy ofertetani o\'qib chiqing. Shartlarni qabul qilganingizdan so\'ng "✅ Shartlarni qabul qilaman" tugmasini bosing.';
 
     return { message, keyboard };
   }
@@ -1009,7 +1020,6 @@ ${expirationLabel} ${subscriptionEndDate}`;
     options: { preferEdit?: boolean } = {},
   ): Promise<void> {
     ctx.session.hasAgreedToTerms = true;
-    ctx.session.pendingSubscriptionUrl = this.STATIC_UZCARD_LINK;
     const { message, keyboard } = this.buildTermsMessage(ctx);
 
     if (options.preferEdit && ctx.callbackQuery) {
@@ -1583,8 +1593,9 @@ ${expirationLabel} ${subscriptionEndDate}`;
       process.env.BASE_CLICK_URL +
       `?userId=${userId}&planId=${plan._id}&selectedService=${selectedService}`;
 
-    const uzcardUrl = this.STATIC_UZCARD_LINK;
-    ctx.session.pendingSubscriptionUrl = uzcardUrl;
+    const uzcardUrl =
+      process.env.UZCARD_API_URL_SPORTS +
+      `?userId=${userId}&planId=${plan._id}&selectedService=${selectedService}`;
 
     const keyboard = new InlineKeyboard();
 
