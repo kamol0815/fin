@@ -21,7 +21,7 @@ export interface IUserCardsDocument extends Document {
   UzcardId?: number;
   UzcardOwner?: string;
   UzcardIncompleteNumber?: string;
-  UzcardIdForDeleteCard?: string;
+  UzcardIdForDeleteCard?: number;
 
   subscribedTo?: SubscribedTo[];
 }
