@@ -16,6 +16,12 @@ import { verifySignedToken } from '../../../shared/utils/signed-token.util';
 import { config } from '../../../shared/config';
 import { Plan } from '../../../shared/database/models/plans.model';
 
+interface UzcardAccessPayload {
+  uid: string;
+  pid: string;
+  svc: string;
+}
+
 @Controller('uzcard-api')
 export class UzCardApiController {
   constructor(private readonly uzCardApiService: UzCardApiService) {}
@@ -24,17 +30,7 @@ export class UzCardApiController {
   @Header('Content-Type', 'text/html')
   @Render('uzcard/payment-card-insert')
   async renderPaymentPage(@Query('token') token?: string) {
-    if (!token) {
-      throw new BadRequestException('Missing access token');
-    }
-
-    let payload: { uid: string; pid: string; svc: string };
-    try {
-      payload = verifySignedToken(token, config.PAYMENT_LINK_SECRET);
-    } catch (error) {
-      throw new BadRequestException('Invalid or expired access link');
-    }
-
+    const payload = await this.decodeToken(token);
     const plan = await Plan.findById(payload.pid).lean();
 
     return {
@@ -51,17 +47,7 @@ export class UzCardApiController {
     @Query('phone') phone: string,
     @Query('token') token?: string,
   ) {
-    if (!token) {
-      throw new BadRequestException('Missing access token');
-    }
-
-    let payload: { uid: string; pid: string; svc: string };
-    try {
-      payload = verifySignedToken(token, config.PAYMENT_LINK_SECRET);
-    } catch (error) {
-      throw new BadRequestException('Invalid or expired access link');
-    }
-
+    const payload = await this.decodeToken(token);
     const plan = await Plan.findById(payload.pid).lean();
 
     return {
@@ -76,7 +62,7 @@ export class UzCardApiController {
   @Post('/add-card')
   async addCard(
     @Body() requestBody: AddCardDto,
-  ): Promise<AddCardResponseDto | ErrorResponse> { 
+  ): Promise<AddCardResponseDto | ErrorResponse> {
     return await this.uzCardApiService.addCard(requestBody);
   }
 
@@ -104,5 +90,20 @@ export class UzCardApiController {
     @Query('token') token: string,
   ) {
     return await this.uzCardApiService.resendCode(session, token);
+  }
+
+  private async decodeToken(token?: string): Promise<UzcardAccessPayload> {
+    if (!token) {
+      throw new BadRequestException('Obuna havolasi eskirgan. Botdan qayta oling.');
+    }
+
+    try {
+      return verifySignedToken<UzcardAccessPayload>(
+        token,
+        config.PAYMENT_LINK_SECRET,
+      );
+    } catch (error) {
+      throw new BadRequestException('Obuna havolasi noto‘g‘ri yoki eskirgan.');
+    }
   }
 }

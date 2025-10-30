@@ -187,7 +187,7 @@
   </style>
 </head>
 
-<body data-token="<%= token %>" data-service="<%= selectedService %>">
+<body data-token="<%= token %>" data-service="<%= selectedService %>" data-plan-name="<%= planName %>">
   <div class="container">
     <div class="header">
       <div class="logo">
@@ -223,10 +223,6 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', function () {
-      // Get URL parameters
-      const urlParams = new URLSearchParams(window.location.search);
-      const session = urlParams.get('session');
-      const phoneNumber = urlParams.get('phone');
       const token = document.body.dataset.token;
       const selectedService = document.body.dataset.service;
 
@@ -234,6 +230,11 @@
         alert('Havola eskirgan. Iltimos, bot orqali qayta oching.');
         return;
       }
+
+      // Get URL parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const session = urlParams.get('session');
+      const phoneNumber = urlParams.get('phone');
 
       // Display masked phone number
       if (phoneNumber) {
@@ -325,7 +326,7 @@
 
           const queryParams = new URLSearchParams({
             session: session,
-            token: token,
+            token: token
           });
 
           const response = await fetch(`resend-otp?${queryParams.toString()}`, {

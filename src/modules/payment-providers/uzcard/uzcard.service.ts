@@ -19,7 +19,6 @@ import {
 import { UserModel } from '../../../shared/database/models/user.model';
 import {
   CardType,
-  IUserCardsDocument,
   UserCardsModel,
 } from '../../../shared/database/models/user-cards.model';
 import { UserSubscription } from '../../../shared/database/models/user-subscription.model';
@@ -31,16 +30,16 @@ import { verifySignedToken } from '../../../shared/utils/signed-token.util';
 import { config } from '../../../shared/config';
 import mongoose from 'mongoose';
 
+interface UzcardAccessPayload {
+  uid: string;
+  pid: string;
+  svc: string;
+}
+
 export interface ErrorResponse {
   success: false;
   errorCode: string;
   message: string;
-}
-
-interface UzcardTokenPayload {
-  uid: string;
-  pid: string;
-  svc: string;
 }
 
 @Injectable()
@@ -59,21 +58,29 @@ export class UzCardApiService {
   //   }
 
   async addCard(dto: AddCardDto): Promise<AddCardResponseDto | ErrorResponse> {
+    let access: UzcardAccessPayload;
+    try {
+      access = this.decodeAccessToken(dto.token);
+    } catch (error) {
+      logger.warn('Invalid Uzcard token in addCard', { error });
+      return {
+        success: false,
+        errorCode: 'invalid_link',
+        message:
+          'Havola eskirgan. Bot orqali obuna sahifasini qayta oching.',
+      };
+    }
+
+    const { uid: userId } = access;
+
     const headers = this.getHeaders();
-
-    const { uid: userId, pid: planId, svc: selectedService } =
-      this.decodeAccessToken(dto.token);
-
-    const normalizedUserId = mongoose.Types.ObjectId.isValid(userId)
-      ? new mongoose.Types.ObjectId(userId)
-      : userId;
-    const normalizedUserIdValue =
-      normalizedUserId instanceof mongoose.Types.ObjectId
-        ? normalizedUserId.toHexString()
-        : normalizedUserId;
+    const requestConfig = {
+      headers,
+      validateStatus: () => true,
+    };
 
     const payload: ExternalAddCardDto = {
-      userId: userId,
+      userId,
       cardNumber: dto.cardNumber,
       expireDate: dto.expireDate,
       userPhone: dto.userPhone,
@@ -83,7 +90,7 @@ export class UzCardApiService {
       const apiResponse = await axios.post(
         `${this.baseUrl}/UserCard/createUserCard`,
         payload,
-        { headers },
+        requestConfig,
       );
 
       console.log(apiResponse)
@@ -91,6 +98,17 @@ export class UzCardApiService {
       if (apiResponse.data.error) {
         const errorCode =
           apiResponse.data.error.errorCode?.toString() || 'unknown';
+
+        // If error is -108 (card already exists), try to delete and re-add
+        if (errorCode === '-108') {
+          return await this.resolveExistingCardConflict(
+            userId,
+            dto,
+            payload,
+            requestConfig,
+          );
+        }
+
         return {
           success: false,
           errorCode: errorCode,
@@ -118,164 +136,12 @@ export class UzCardApiService {
 
         // If error is -108 (card already exists), try to delete and re-add
         if (errorCode === '-108') {
-          logger.info(`Card already exists (error -108). Attempting to delete and re-add for user: ${normalizedUserIdValue}`);
-
-          try {
-            // First, try to find existing card by userId
-            let existingCard = await UserCardsModel.findOne({
-              userId: normalizedUserId,
-              cardType: CardType.UZCARD
-            })
-              .sort({ updatedAt: -1 })
-              .exec();
-
-            // If not found by userId, try by telegramId
-            if (!existingCard) {
-              const user = await UserModel.findById(normalizedUserId)
-                .select('telegramId')
-                .exec();
-
-              if (user?.telegramId) {
-                existingCard = await UserCardsModel.findOne({
-                  telegramId: user.telegramId,
-                  cardType: CardType.UZCARD,
-                })
-                  .sort({ updatedAt: -1 })
-                  .exec();
-              }
-            }
-
-            // Also try to find by card number (last 4 digits match)
-            if (!existingCard) {
-              const last4Digits = dto.cardNumber.slice(-4);
-              existingCard = await UserCardsModel.findOne({
-                incompleteCardNumber: { $regex: last4Digits + '$' },
-                cardType: CardType.UZCARD,
-              })
-                .sort({ updatedAt: -1 })
-                .exec();
-            }
-
-            if (existingCard && existingCard.UzcardIdForDeleteCard) {
-              logger.info(`Found existing card (ID: ${existingCard.UzcardIdForDeleteCard}), attempting to delete from Uzcard API...`);
-
-              // Delete card from Uzcard API
-              const deletedRemotely = await this.deleteUzcardCardFromProvider(
-                existingCard.UzcardIdForDeleteCard,
-                headers,
-              );
-
-              if (deletedRemotely) {
-                logger.info(`Card deleted from Uzcard API successfully`);
-              } else {
-                logger.warn(`Failed to delete card from Uzcard API, but continuing anyway...`);
-              }
-
-              // Remove card from local database
-              await UserCardsModel.deleteOne({ _id: existingCard._id });
-
-              // Wait for Uzcard system to process the deletion
-              await new Promise((resolve) => setTimeout(resolve, 2000));
-
-              // Try to add the card again
-              logger.info(`Attempting to re-add card after deletion...`);
-              const retryResponse = await axios.post(
-                `${this.baseUrl}/UserCard/createUserCard`,
-                payload,
-                { headers },
-              );
-
-              if (retryResponse.data.error) {
-                const retryErrorCode =
-                  retryResponse.data.error.errorCode?.toString() || 'unknown';
-                logger.error(`Retry failed with error ${retryErrorCode}: ${retryResponse.data.error.errorMessage}`);
-                return {
-                  success: false,
-                  errorCode: retryErrorCode,
-                  message:
-                    retryResponse.data.error.errorMessage ||
-                    this.getErrorMessage(retryErrorCode),
-                };
-              }
-
-              logger.info(`Card re-added successfully after deletion`);
-              return {
-                session: retryResponse.data.result.session,
-                otpSentPhone: retryResponse.data.result.otpSentPhone,
-                success: true,
-              };
-            } else {
-              logger.warn(`No existing card found in database with deletion ID, but Uzcard says card exists. Card conflict detected.`);
-
-              // Since getUserCards API endpoint seems to not exist (404 error),
-              // we'll use a different approach: try to generate possible card IDs or 
-              // inform the user about the conflict
-
-              // First, let's try a simple retry after waiting - sometimes the card gets cleared automatically
-              logger.info(`Waiting 5 seconds before retry attempt...`);
-              await new Promise((resolve) => setTimeout(resolve, 5000));
-
-              try {
-                const retryResponse = await axios.post(
-                  `${this.baseUrl}/UserCard/createUserCard`,
-                  payload,
-                  { headers },
-                );
-
-                if (!retryResponse.data.error) {
-                  logger.info(`Card added successfully after wait and retry`);
-                  return {
-                    session: retryResponse.data.result.session,
-                    otpSentPhone: retryResponse.data.result.otpSentPhone,
-                    success: true,
-                  };
-                } else {
-                  logger.error(`Retry still failed after wait: ${retryResponse.data.error.errorMessage}`);
-
-                  // If it's still error -108, we have a persistent card conflict
-                  if (retryResponse.data.error.errorCode === -108) {
-                    logger.warn(`Persistent card conflict detected. This card may exist on UzCard servers but not in our database.`);
-
-                    // Try different potential card ID patterns that might work for deletion
-                    await this.tryAdvancedCardCleanup(dto.cardNumber, normalizedUserIdValue, headers);
-
-                    // One more final retry after advanced cleanup
-                    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-                    try {
-                      const finalRetry = await axios.post(
-                        `${this.baseUrl}/UserCard/createUserCard`,
-                        payload,
-                        { headers },
-                      );
-
-                      if (!finalRetry.data.error) {
-                        logger.info(`Card added successfully after advanced cleanup`);
-                        return {
-                          session: finalRetry.data.result.session,
-                          otpSentPhone: finalRetry.data.result.otpSentPhone,
-                          success: true,
-                        };
-                      }
-                    } catch (finalRetryError) {
-                      logger.error(`Final retry failed: ${finalRetryError}`);
-                    }
-
-                    // Return a specific error that provides helpful guidance
-                    return {
-                      success: false,
-                      errorCode: '-108',
-                      message: 'Bu karta UzCard tizimida mavjud. Iltimos, boshqa karta qo\'shing yoki @munajjimbot_admin bilan bog\'laning.',
-                    };
-                  }
-                }
-              } catch (retryError) {
-                logger.error(`Error during retry attempt: ${retryError}`);
-              }
-            }
-          } catch (cleanupError) {
-            logger.error(`Error during card cleanup and retry: ${cleanupError}`);
-          }
+          return await this.resolveExistingCardConflict(
+            userId,
+            dto,
+            payload,
+            requestConfig,
+          );
         }
 
         return {
@@ -297,21 +163,214 @@ export class UzCardApiService {
     }
   }
 
+  private async resolveExistingCardConflict(
+    userId: string,
+    dto: AddCardDto,
+    payload: ExternalAddCardDto,
+    requestConfig: Record<string, any>,
+  ): Promise<AddCardResponseDto | ErrorResponse> {
+    const headers =
+      (requestConfig?.headers as Record<string, string>) || this.getHeaders();
+
+    const normalizedUserId = mongoose.Types.ObjectId.isValid(userId)
+      ? new mongoose.Types.ObjectId(userId)
+      : userId;
+
+    const normalizedUserIdValue =
+      normalizedUserId instanceof mongoose.Types.ObjectId
+        ? normalizedUserId.toHexString()
+        : normalizedUserId;
+
+    logger.info(
+      `Card already exists (error -108). Attempting to delete and re-add for user: ${normalizedUserIdValue}`,
+    );
+
+    try {
+      let existingCard = await UserCardsModel.findOne({
+        userId: normalizedUserId,
+        cardType: CardType.UZCARD,
+      })
+        .sort({ updatedAt: -1 })
+        .exec();
+
+      if (!existingCard) {
+        const user = await UserModel.findById(normalizedUserId)
+          .select('telegramId')
+          .exec();
+
+        if (user?.telegramId) {
+          existingCard = await UserCardsModel.findOne({
+            telegramId: user.telegramId,
+            cardType: CardType.UZCARD,
+          })
+            .sort({ updatedAt: -1 })
+            .exec();
+        }
+      }
+
+      if (!existingCard) {
+        const last4Digits = dto.cardNumber.slice(-4);
+        existingCard = await UserCardsModel.findOne({
+          incompleteCardNumber: { $regex: `${last4Digits}$` },
+          cardType: CardType.UZCARD,
+        })
+          .sort({ updatedAt: -1 })
+          .exec();
+      }
+
+      if (existingCard?.UzcardIdForDeleteCard) {
+        logger.info(
+          `Found existing card (ID: ${existingCard.UzcardIdForDeleteCard}), attempting to delete from Uzcard API...`,
+        );
+
+        const deletedRemotely = await this.deleteUzcardCardFromProvider(
+          existingCard.UzcardIdForDeleteCard,
+          headers,
+        );
+
+        if (deletedRemotely) {
+          logger.info(`Card deleted from Uzcard API successfully`);
+        } else {
+          logger.warn(
+            `Failed to delete card from Uzcard API, but continuing anyway...`,
+          );
+        }
+
+        await UserCardsModel.deleteOne({ _id: existingCard._id });
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        const retryResponse = await axios.post(
+          `${this.baseUrl}/UserCard/createUserCard`,
+          payload,
+          requestConfig,
+        );
+
+        if (retryResponse.data.error) {
+          const retryErrorCode =
+            retryResponse.data.error.errorCode?.toString() || 'unknown';
+          logger.error(
+            `Retry failed with error ${retryErrorCode}: ${retryResponse.data.error.errorMessage}`,
+          );
+          return {
+            success: false,
+            errorCode: retryErrorCode,
+            message:
+              retryResponse.data.error.errorMessage ||
+              this.getErrorMessage(retryErrorCode),
+          };
+        }
+
+        logger.info(`Card re-added successfully after deletion`);
+        return {
+          session: retryResponse.data.result.session,
+          otpSentPhone: retryResponse.data.result.otpSentPhone,
+          success: true,
+        };
+      }
+
+      logger.warn(
+        `No existing card found in database with deletion ID, but Uzcard says card exists. Card conflict detected.`,
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      try {
+        const retryResponse = await axios.post(
+          `${this.baseUrl}/UserCard/createUserCard`,
+          payload,
+          requestConfig,
+        );
+
+        if (!retryResponse.data.error) {
+          logger.info(`Card added successfully after wait and retry`);
+          return {
+            session: retryResponse.data.result.session,
+            otpSentPhone: retryResponse.data.result.otpSentPhone,
+            success: true,
+          };
+        }
+
+        logger.error(
+          `Retry still failed after wait: ${retryResponse.data.error.errorMessage}`,
+        );
+
+        if (retryResponse.data.error.errorCode === -108) {
+          logger.warn(
+            `Persistent card conflict detected. This card may exist on UzCard servers but not in our database.`,
+          );
+
+          await this.tryAdvancedCardCleanup(
+            dto.cardNumber,
+            normalizedUserIdValue,
+            headers,
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+
+          try {
+            const finalRetry = await axios.post(
+              `${this.baseUrl}/UserCard/createUserCard`,
+              payload,
+              requestConfig,
+            );
+
+            if (!finalRetry.data.error) {
+              logger.info(`Card added successfully after advanced cleanup`);
+              return {
+                session: finalRetry.data.result.session,
+                otpSentPhone: finalRetry.data.result.otpSentPhone,
+                success: true,
+              };
+            }
+          } catch (finalRetryError) {
+            logger.error(`Final retry failed: ${finalRetryError}`);
+          }
+        }
+      } catch (retryError) {
+        logger.error(`Error during retry attempt: ${retryError}`);
+      }
+    } catch (cleanupError) {
+      logger.error(`Error during card cleanup and retry: ${cleanupError}`);
+    }
+
+    return {
+      success: false,
+      errorCode: '-108',
+      message:
+        "Bu karta UzCard tizimida mavjud. Iltimos, boshqa karta qo'shing yoki @munajjimbot_admin bilan bog'laning.",
+    };
+  }
+
   /**
    * Confirm a card with OTP
    */
   async confirmCard(
     request: ConfirmCardDto,
   ): Promise<ConfirmCardResponseDto | ErrorResponse> {
+    let access: UzcardAccessPayload;
     try {
-      const { uid: userId, pid: planId, svc: selectedService } =
-        this.decodeAccessToken(request.token);
+      access = this.decodeAccessToken(request.token);
+    } catch (error) {
+      logger.warn('Invalid Uzcard token in confirmCard', { error });
+      return {
+        success: false,
+        errorCode: 'invalid_link',
+        message:
+          'Havola eskirgan. Bot orqali obuna sahifasini qayta oching.',
+      };
+    }
 
+    const { uid: userId, pid: planId, svc: selectedService } = access;
+
+    try {
       const payload = {
         session: request.session,
         otp: request.otp,
         isTrusted: 1,
       };
+
+      logger.info(`Selected sport: ${selectedService} in confirmCard`);
 
       const headers = this.getHeaders();
 
@@ -343,7 +402,9 @@ export class UzCardApiService {
       const balance = card.balance;
       const expireDate = card.expireDate;
 
-      const user = await UserModel.findById(userId);
+      const user = await UserModel.findOne({
+        _id: userId,
+      });
       if (!user) {
         logger.error(`User not found for ID: ${userId}`);
         return {
@@ -380,7 +441,7 @@ export class UzCardApiService {
         };
       }
 
-      let cardRecord: IUserCardsDocument | null = await UserCardsModel.findOne({
+      let cardRecord = await UserCardsModel.findOne({
         telegramId: user.telegramId,
         cardType: CardType.UZCARD,
       });
@@ -395,7 +456,7 @@ export class UzCardApiService {
         cardRecord.incompleteCardNumber = incompleteCardNumber;
         cardRecord.cardToken = cardId;
         cardRecord.expireDate = expireDate;
-        cardRecord.verificationCode = parseInt(request.otp);
+        cardRecord.verificationCode = parseInt(request.otp, 10);
         cardRecord.verified = true;
         cardRecord.verifiedDate = new Date();
         cardRecord.planId = plan._id as any;
@@ -414,7 +475,7 @@ export class UzCardApiService {
           incompleteCardNumber: incompleteCardNumber,
           cardToken: cardId,
           expireDate: expireDate,
-          verificationCode: request.otp,
+          verificationCode: parseInt(request.otp, 10),
           verified: true,
           verifiedDate: new Date(),
           cardType: CardType.UZCARD,
@@ -482,7 +543,19 @@ export class UzCardApiService {
     }
   }
 
-  async resendCode(session: string, userId: string) {
+  async resendCode(session: string, token: string) {
+    try {
+      this.decodeAccessToken(token);
+    } catch (error) {
+      logger.warn('Invalid Uzcard token in resendCode', { error });
+      return {
+        success: false,
+        errorCode: 'invalid_link',
+        message:
+          'Havola eskirgan. Bot orqali obuna sahifasini qayta oching.',
+      };
+    }
+
     try {
       const payload = {
         session: session,
@@ -795,19 +868,48 @@ export class UzCardApiService {
     };
   }
 
-  private decodeAccessToken(token: string): UzcardTokenPayload {
+  private decodeAccessToken(token: string): UzcardAccessPayload {
     if (!token) {
       throw new Error('Missing Uzcard token');
     }
 
     try {
-      return verifySignedToken<UzcardTokenPayload>(token, config.PAYMENT_LINK_SECRET);
+      return verifySignedToken<UzcardAccessPayload>(token, config.PAYMENT_LINK_SECRET);
     } catch (error) {
       logger.error('Failed to verify Uzcard token', { error });
       throw new Error('Invalid token');
     }
   }
 
+  private getErrorMessage(errorCode: string): string {
+    const errorMessages = {
+      // card errors
+      '-101': `Karta malumotlari noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
+      '-103': `Amal qilish muddati noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
+      '-104': 'Karta aktive emas. Bankga murojaat qiling.',
+      '-108': `Bu karta allaqon tizimda mavjud. Iltimos qaytadan urinib ko'ring.`,
+
+      // sms errors
+      '-113': `Tasdiqlash kodi muddati o'tgan. Qayta yuborish tugmasidan foydalaning.`,
+      '-137': `Tasdiqlash kodi noto'g'ri.`,
+
+      // additional common errors
+      '-110': "Kartada yetarli mablag' mavjud emas.",
+      '-120': 'Kartangiz bloklangan. Bankga murojaat qiling.',
+      '-130':
+        "Xavfsizlik chegaralaridan oshib ketdi. Keyinroq qayta urinib ko'ring.",
+    };
+
+    //@ts-ignore
+    return (
+      errorMessages[errorCode] ||
+      "Kutilmagan xatolik yuz berdi. Iltimos qaytadan urinib ko'ring."
+    );
+  }
+
+  /**
+   * Delete a card from UzCard provider
+   */
   private async deleteUzcardCardFromProvider(
     userCardId: number | string,
     headers: Record<string, string>,
@@ -857,99 +959,6 @@ export class UzCardApiService {
         });
         return false;
       }
-    }
-  }
-
-  private getErrorMessage(errorCode: string): string {
-    const errorMessages = {
-      // card errors
-      '-101': `Karta malumotlari noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
-      '-103': `Amal qilish muddati noto'g'ri. Iltimos tekshirib qaytadan kiriting.`,
-      '-104': 'Karta aktive emas. Bankga murojaat qiling.',
-      '-108': `Bu karta allaqachon tizimda mavjud. Iltimos qaytadan urinib ko'ring.`,
-
-      // sms errors
-      '-113': `Tasdiqlash kodi muddati o'tgan. Qayta yuborish tugmasidan foydalaning.`,
-      '-137': `Tasdiqlash kodi noto'g'ri.`,
-
-      // additional common errors
-      '-110': "Kartada yetarli mablag' mavjud emas.",
-      '-120': 'Kartangiz bloklangan. Bankga murojaat qiling.',
-      '-130':
-        "Xavfsizlik chegaralaridan oshib ketdi. Keyinroq qayta urinib ko'ring.",
-    };
-
-    //@ts-ignore
-    return (
-      errorMessages[errorCode] ||
-      "Kutilmagan xatolik yuz berdi. Iltimos qaytadan urinib ko'ring."
-    );
-  }
-
-  /**
-   * Get user's card list from Uzcard API
-   */
-  private async getUserCardList(userId: string, headers: Record<string, string>): Promise<any[]> {
-    try {
-      logger.info(`Attempting to get user cards for userId: ${userId}`);
-      logger.info(`Using baseUrl: ${this.baseUrl}`);
-      logger.info(`Headers:`, headers);
-
-      // Actually, looking at the UzCard API pattern, maybe the endpoint doesn't exist
-      // Let's try a different approach - since we can't get the card list,
-      // let's just return empty array and handle the error differently
-
-      const payload = { userId };
-      logger.info(`Payload:`, payload);
-
-      const response = await axios.post(
-        `${this.baseUrl}/UserCard/getUserCards`,
-        payload,
-        { headers },
-      );
-
-      logger.info(`getUserCards API response:`, {
-        status: response.status,
-        statusText: response.statusText,
-        data: response.data,
-        headers: response.headers
-      });
-
-      if (response.data?.error) {
-        logger.warn('Uzcard getUserCards returned error', {
-          error: response.data.error,
-          errorCode: response.data.error.errorCode,
-          errorMessage: response.data.error.errorMessage
-        });
-        return [];
-      }
-
-      // Try different response formats
-      const cards = response.data?.result?.cards ||
-        response.data?.cards ||
-        response.data?.data?.cards ||
-        (Array.isArray(response.data) ? response.data : []);
-
-      if (Array.isArray(cards)) {
-        logger.info(`Successfully retrieved ${cards.length} cards from getUserCards API`);
-        return cards;
-      }
-
-      logger.warn('getUserCards API returned unexpected format:', response.data);
-      return [];
-    } catch (error) {
-      logger.error(`Error getting user cards from Uzcard API:`, {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        config: {
-          url: error.config?.url,
-          method: error.config?.method,
-          data: error.config?.data
-        }
-      });
-      return [];
     }
   }
 

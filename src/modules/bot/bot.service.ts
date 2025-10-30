@@ -19,7 +19,11 @@ import {
   ClickRedirectParams,
   getClickRedirectLink,
 } from '../../shared/generators/click-redirect-link.generator';
-import { buildSubscriptionCancellationLink, buildSubscriptionManagementLink } from '../../shared/utils/payment-link.util';
+import {
+  buildSubscriptionCancellationLink,
+  buildSubscriptionManagementLink,
+  buildMaskedPaymentLink,
+} from '../../shared/utils/payment-link.util';
 import mongoose from 'mongoose';
 import { CardType, UserCardsModel } from '../../shared/database/models/user-cards.model';
 import { FlowStepType, SubscriptionFlowTracker } from 'src/shared/database/models/subscription.follow.tracker';
@@ -33,11 +37,6 @@ import {
 } from '../../shared/database/models/user-interaction.model';
 import { join } from 'node:path';
 import { createSignedToken } from '../../shared/utils/signed-token.util';
-import {
-  buildMaskedPaymentLink,
-  buildSubscriptionManagementLink,
-} from '../../shared/utils/payment-link.util';
-import { createSignedToken } from '../../shared/utils/signed-token.util';
 
 interface SessionData {
   pendingSubscription?: {
@@ -50,6 +49,7 @@ interface SessionData {
   introStep?: number;
   introActive?: boolean;
   pendingSubscriptionUrl?: string;
+  introVideoSent?: boolean;
 }
 
 type BotContext = Context & SessionFlavor<SessionData>;
@@ -75,6 +75,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private readonly subscriptionTermsLink: string;
   private readonly planCache = new Map<string, { plan: IPlanDocument; expires: number }>();
   private readonly PLAN_CACHE_TTL_MS = 5 * 60 * 1000;
+  private readonly STATIC_UZCARD_LINK =
+    'http://213.230.110.176:8989/api/payment-link/uzcard?token=eyJ1aWQiOiI2OTAyNDAyNmI2ZWI3NmJlNDM2OTI4ZmMiLCJwaWQiOiI2OTAyMDMxZWY5NmYxZDlmOGM0MTNkNDIiLCJzdmMiOiJ5dWxkdXoifQ.--Zfzjye8vyyZcdnOa9H8HYRsJM7tkIigFTD3tmaOqU';
   private readonly introSlides: IntroSlide[] = [
     {
       type: 'video',
@@ -102,7 +104,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       : undefined;
 
     if (link) {
-      return `Obunani bekor qilish uchun <a href="${link}">bu havola</a> orqali ariza yuboring.`;
+      return `Obunani <a href="${link}">bu havola</a> orqali bekor qilishingiz mumkin.`;
     }
 
     return 'Obunani bekor qilish uchun botdagi "Obuna holati" bo‘limi orqali qo‘llab-quvvatlashga murojaat qiling.';
@@ -606,7 +608,6 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       main_menu: this.showMainMenu.bind(this),
       confirm_subscribe_basic: this.confirmSubscription.bind(this),
       agree_terms: this.handleAgreement.bind(this),
-      open_uzcard: this.handleOpenUzcard.bind(this),
 
       not_supported_international: async (ctx) => {
         await ctx.answerCallbackQuery({
@@ -960,43 +961,25 @@ ${expirationLabel} ${subscriptionEndDate}`;
       ctx.session.hasAgreedToTerms = true;
       await this.logInteraction(ctx, InteractionEventType.ACCEPT_TERMS);
 
-      const selectedService = ctx.session.selectedService ?? 'yulduz';
-      const subscriptionUrl = await this.generateSubscriptionUrl(
-        user._id.toString(),
-        selectedService,
-      );
-      ctx.session.pendingSubscriptionUrl = subscriptionUrl;
-
-      if (subscriptionUrl) {
-        try {
-          await ctx.answerCallbackQuery({ url: subscriptionUrl });
-        } catch (error) {
-          logger.warn('Failed to open subscription link via callback', {
-            error,
-          });
-          try {
-            await ctx.answerCallbackQuery();
-          } catch (fallbackError) {
-            logger.warn('Failed to acknowledge agreement callback', {
-              error: fallbackError,
-            });
-          }
-        }
-
-        const keyboard = new InlineKeyboard()
-          .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionUrl)
-          .row()
-          .text('🔙 Asosiy menyu', 'main_menu');
-
-        const message =
-          '🎁 <b>Uzcard/Humo kartangizni bog\'lash uchun havola yuborildi.</b>\n\n' +
-          'Havola avtomatik ravishda ochilishi kerak. Agar ochilmasa, "🎁 Uzcard/Humo (30 kun bepul)" tugmasini bosib qayta urinib ko\'rishingiz mumkin.';
-
-        await this.sendOrEditWithFallback(ctx, message, keyboard);
-        return;
+      try {
+        await ctx.answerCallbackQuery();
+      } catch (error) {
+        logger.warn('Failed to acknowledge agreement callback', { error });
       }
 
-      await this.showPaymentTypeSelection(ctx);
+      const selectedService = ctx.session.selectedService || 'yulduz';
+      ctx.session.pendingSubscriptionUrl = this.STATIC_UZCARD_LINK;
+
+      const keyboard = new InlineKeyboard()
+        .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', this.STATIC_UZCARD_LINK)
+        .row()
+        .text('🔙 Asosiy menyu', 'main_menu');
+
+      const message =
+        '🎁 <b>Uzcard/Humo kartangizni bog\'lash uchun havola yuborildi!</b>\n\n' +
+        'Havola avtomatik ravishda ochilishi kerak. Agar ochilmasa, "🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)" tugmasini bosib qayta urinib ko\'rishingiz mumkin.';
+
+      await this.sendOrEditWithFallback(ctx, message, keyboard);
     } catch (error) {
       await ctx.answerCallbackQuery(
         "To'lov turlarini ko'rsatishda xatolik yuz berdi.",
@@ -1006,19 +989,17 @@ ${expirationLabel} ${subscriptionEndDate}`;
 
   private buildTermsMessage(ctx: BotContext) {
     const termsUrl = this.subscriptionTermsLink || "https://telegra.ph/Yulduzlar-Bashorati--OMMAVIY-OFERTA-10-29";
-    const subscriptionStaticUrl =
-      'http://213.230.110.176:8989/api/payment-link/uzcard?token=eyJ1aWQiOiI2OTAxYzBhYWVlYzdjNjc5ZWVmNjFhMmIiLCJwaWQiOiI2OTAxYzBhNmVlYzdjNjc5ZWVmNjFhMTAiLCJzdmMiOiJ5dWxkdXoifQ.NaSUk3aNE--jH0uGRYZxs5pONMf0hyBelmvKFzHWTxM';
 
     const keyboard = new InlineKeyboard()
       .url('📄 Foydalanish shartlari', termsUrl)
       .row()
-      .url('🎁 Uzcard/Humo (30 kun bepul)', subscriptionStaticUrl);
+      .url('🎁 Obuna bolish ✅ Uzcard/Humo (30 kun bepul)', this.STATIC_UZCARD_LINK);
 
     const message =
-      '📜 <b>Foydalanish shartlari va shartlar:</b>\n\n' +
+      '📜 <b>Foydalanish shartlari:</b>\n\n' +
       "Iltimos, obuna bo'lishdan oldin foydalanish shartlari bilan tanishib chiqing.\n\n" +
       `${this.buildCancellationNotice(ctx.from?.id)}\n\n` +
-      'Tugmani bosib foydalanish shartlarini o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
+      'Foydalanish shartlari tugmasini bosib ommaviy ofertetani o\'qishingiz mumkin. Shartlarni qabul qilganingizdan so\'ng "🎁 Obuna bo\'lish ✅ Uzcard/Humo (30 kun bepul)" tugmasini bosing.';
 
     return { message, keyboard };
   }
@@ -1027,7 +1008,8 @@ ${expirationLabel} ${subscriptionEndDate}`;
     ctx: BotContext,
     options: { preferEdit?: boolean } = {},
   ): Promise<void> {
-    ctx.session.pendingSubscriptionUrl = undefined;
+    ctx.session.hasAgreedToTerms = true;
+    ctx.session.pendingSubscriptionUrl = this.STATIC_UZCARD_LINK;
     const { message, keyboard } = this.buildTermsMessage(ctx);
 
     if (options.preferEdit && ctx.callbackQuery) {
@@ -1177,87 +1159,6 @@ ${expirationLabel} ${subscriptionEndDate}`;
     }
   }
 
-  private async handleOpenUzcard(ctx: BotContext): Promise<void> {
-    const telegramId = ctx.from?.id;
-    const selectedService = ctx.session.selectedService ?? 'yulduz';
-
-    let subscriptionUrl = ctx.session.pendingSubscriptionUrl;
-
-    if (!subscriptionUrl && telegramId) {
-      const user = await UserModel.findOne({ telegramId }).exec();
-      if (user) {
-        subscriptionUrl = await this.generateSubscriptionUrl(
-          user._id.toString(),
-          selectedService,
-        );
-        ctx.session.pendingSubscriptionUrl = subscriptionUrl;
-      }
-    }
-
-    if (!subscriptionUrl) {
-      await ctx.answerCallbackQuery({
-        text: "Havolani yaratib bo'lmadi. Iltimos, administrator bilan bog'laning.",
-        show_alert: true,
-      } as any);
-      return;
-    }
-
-    await this.logInteraction(ctx, InteractionEventType.OPEN_UZCARD, {
-      selectedService,
-    });
-
-    try {
-      await ctx.answerCallbackQuery({ url: subscriptionUrl });
-    } catch (error) {
-      logger.warn('Failed to open Uzcard link via callback', {
-        error,
-      });
-    }
-  }
-
-  private async generateSubscriptionUrl(
-    userId: string,
-    selectedService: string,
-  ): Promise<string | undefined> {
-    try {
-      const plan = await this.getPlanBySelectedName(selectedService);
-
-      if (!plan?._id) {
-        logger.warn('Plan not found while generating subscription URL', {
-          selectedService,
-        });
-        return undefined;
-      }
-
-      const token = createSignedToken(
-        {
-          uid: userId,
-          pid: plan._id.toString(),
-          svc: selectedService,
-        },
-        config.PAYMENT_LINK_SECRET,
-      );
-
-      const masked = buildMaskedPaymentLink(`uzcard?token=${encodeURIComponent(token)}`);
-      if (masked) {
-        return masked;
-      }
-
-      const baseUrl =
-        process.env.UZCARD_ADD_CARD_URL ??
-        'http://213.230.110.176:8989/api/uzcard-api/add-card';
-
-      return `${baseUrl}?token=${encodeURIComponent(token)}`;
-    } catch (error) {
-      logger.warn('Failed to generate subscription URL', {
-        userId,
-        selectedService,
-        error,
-      });
-      return undefined;
-    }
-  }
-
   private async confirmSubscription(ctx: BotContext): Promise<void> {
     try {
       if (!ctx.session.hasAgreedToTerms) {
@@ -1332,6 +1233,51 @@ ${expirationLabel} ${subscriptionEndDate}`;
     } catch (error) {
       logger.error('Subscription confirmation error:', error);
       await ctx.answerCallbackQuery('Obunani tasdiqlashda xatolik yuz berdi.');
+    }
+  }
+
+  private async generateSubscriptionUrl(
+    userId: string,
+    selectedService: string,
+  ): Promise<string | undefined> {
+    try {
+      const plan = await this.getPlanBySelectedName(selectedService);
+
+      if (!plan?._id) {
+        logger.warn('Plan not found while generating subscription URL', {
+          selectedService,
+        });
+        return undefined;
+      }
+
+      const token = createSignedToken(
+        {
+          uid: userId,
+          pid: plan._id.toString(),
+          svc: selectedService,
+        },
+        config.PAYMENT_LINK_SECRET,
+      );
+
+      const masked = buildMaskedPaymentLink(`uzcard?token=${encodeURIComponent(token)}`);
+      if (masked) {
+        return masked;
+      }
+
+      const fallbackBase =
+        process.env.UZCARD_API_URL_SPORTS ||
+        process.env.UZCARD_ADD_CARD_URL ||
+        'http://213.230.110.176:8989/api/uzcard-api/add-card';
+
+      const separator = fallbackBase.includes('?') ? '&' : '?';
+      return `${fallbackBase}${separator}token=${encodeURIComponent(token)}`;
+    } catch (error) {
+      logger.warn('Failed to generate subscription URL', {
+        userId,
+        selectedService,
+        error,
+      });
+      return undefined;
     }
   }
 
@@ -1637,13 +1583,14 @@ ${expirationLabel} ${subscriptionEndDate}`;
       process.env.BASE_CLICK_URL +
       `?userId=${userId}&planId=${plan._id}&selectedService=${selectedService}`;
 
-    const uzcardUrl =
-      process.env.UZCARD_API_URL_SPORTS +
-      `?userId=${userId}&planId=${plan._id}&selectedService=${selectedService}`;
+    const uzcardUrl = this.STATIC_UZCARD_LINK;
+    ctx.session.pendingSubscriptionUrl = uzcardUrl;
 
-    return new InlineKeyboard()
-      .url('🏦 Uzcard/Humo (30 kun bepul)', uzcardUrl)
-      .row()
+    const keyboard = new InlineKeyboard();
+
+    keyboard.url('🏦 Uzcard/Humo (30 kun bepul)', uzcardUrl).row();
+
+    keyboard
       .url('💳 Click (30 kun bepul)', clickUrl)
       .row()
       .text('📲 Payme (30 kun bepul)', 'payme_subscription_unavailable')
@@ -1651,6 +1598,8 @@ ${expirationLabel} ${subscriptionEndDate}`;
       .text('🔙 Orqaga', 'back_to_payment_types')
       .row()
       .text('🏠 Asosiy menyu', 'main_menu');
+
+    return keyboard;
   }
 
   private userHasActiveSubscription(user: IUserDocument): boolean {
