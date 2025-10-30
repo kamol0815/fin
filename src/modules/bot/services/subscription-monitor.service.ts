@@ -6,7 +6,8 @@ import {
 } from '../../../shared/database/models/user.model';
 import logger from '../../../shared/utils/logger';
 import { CardType, UserCardsModel } from '../../../shared/database/models/user-cards.model';
-import { UzCardApiService } from '../../payment-providers/uzcard/uzcard.service';
+import axios from 'axios';
+import { uzcardAuthHash } from '../../../shared/utils/hashing/uzcard-auth-hash';
 
 interface SessionData {
   pendingSubscription?: {
@@ -18,15 +19,86 @@ type BotContext = Context & SessionFlavor<SessionData>;
 
 export class SubscriptionMonitorService {
   private bot: Bot<BotContext>;
+  private readonly baseUrl = process.env.UZCARD_BASE_URL;
 
   constructor(bot: Bot<BotContext>) {
     this.bot = bot;
   }
 
-  private getUzCardService(): UzCardApiService {
-    // Lazy initialization to avoid circular dependency
-    const { BotService } = require('../../bot/bot.service');
-    return new UzCardApiService(new BotService());
+  private getHeaders() {
+    const authHeader = uzcardAuthHash();
+    return {
+      'Content-Type': 'application/json; charset=utf-8',
+      Accept: 'application/json',
+      Authorization: authHeader,
+      Language: 'uz',
+    };
+  }
+
+  private async performDirectPayment(telegramId: number, planId: string): Promise<{ success: boolean; message?: string }> {
+    try {
+      const user = await UserModel.findOne({ telegramId });
+      if (!user) {
+        logger.error(`User not found for Telegram ID: ${telegramId}`);
+        return { success: false, message: 'User not found' };
+      }
+
+      const card = await UserCardsModel.findOne({
+        userId: user._id,
+        cardType: CardType.UZCARD,
+        verified: true
+      });
+
+      if (!card) {
+        logger.error(`Card not found for User ID: ${user._id}`);
+        return { success: false, message: 'Card not found' };
+      }
+
+      const { Plan } = require('../../../shared/database/models/plans.model');
+      const plan = await Plan.findById(planId);
+
+      if (!plan) {
+        logger.error(`Plan not found for Plan ID: ${planId}`);
+        return { success: false, message: 'Plan not found' };
+      }
+
+      const headers = this.getHeaders();
+      const payload = {
+        userId: card.userId.toString(),
+        cardId: card.cardToken,
+        amount: Number(plan.price) || 5555,
+        extraId: `subscription-auto-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+        sendOtp: false,
+      };
+
+      const apiResponse = await axios.post(
+        `${this.baseUrl}/Payment/payment`,
+        payload,
+        { headers },
+      );
+
+      logger.info(
+        `UzCard API auto-renewal response for user ${telegramId}: ${JSON.stringify(apiResponse.data)}`,
+      );
+
+      if (apiResponse.data.error !== null) {
+        const errorMessage = apiResponse.data.error?.errorMessage || 'Payment failed';
+        return { success: false, message: errorMessage };
+      }
+
+      if (!apiResponse.data.result) {
+        return { success: false, message: 'Payment not confirmed' };
+      }
+
+      logger.info(`Auto-renewal payment successful for user ${telegramId}`);
+      return { success: true };
+    } catch (error: any) {
+      logger.error(`Error in performDirectPayment for user ${telegramId}:`, error);
+      return {
+        success: false,
+        message: error.response?.data?.error?.errorMessage || 'Payment processing error'
+      };
+    }
   }
 
   async checkExpiringSubscriptions(): Promise<void> {
@@ -126,9 +198,8 @@ export class SubscriptionMonitorService {
         return false;
       }
 
-      // Attempt payment
-      const uzCardService = this.getUzCardService();
-      const paymentResult = await uzCardService.performPayment(
+      // Attempt payment directly without UzCardApiService to avoid circular dependency
+      const paymentResult = await this.performDirectPayment(
         user.telegramId,
         planId,
       );
